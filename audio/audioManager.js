@@ -10,6 +10,8 @@ var AudioManager = class AudioManager {
         this._sources = [];    // Input devices (microphones)
         this._listeners = [];
         this._createdRoutes = [];  // Track routes we've created { id, name, type, description, moduleIds }
+        this._hearbackModuleId = null;  // Track hearback loopback module
+        this._hearbackEnabled = false;
         
         this.refresh();
         this._detectExistingRoutes();
@@ -136,6 +138,11 @@ var AudioManager = class AudioManager {
                 const remappedSource = this._sources.find(s => s.name === remappedSourceName);
                 const description = remappedSource ? remappedSource.description : 'LichenMixedInput';
 
+                // Find the remap-source module ID
+                const remapKey = `remap-source=${remappedSourceName}`;
+                const remapModuleIds = moduleMap.get(remapKey) || [];
+                moduleIds.push(...remapModuleIds);
+
                 this._createdRoutes.push({
                     id: `input_restored_${Date.now()}_${Math.random()}`,
                     sinkName: baseName,
@@ -145,6 +152,31 @@ var AudioManager = class AudioManager {
                     deviceNames: [], // Unknown for restored routes
                 });
             }
+        }
+
+        // Find orphaned remap-source modules (where the null sink was removed but remap-source remains)
+        for (const [key, moduleIds] of moduleMap.entries()) {
+            if (!key.startsWith('remap-source=lichen_input_')) continue;
+            
+            const sourceName = key.replace('remap-source=', '');
+            // Check if this is already tracked by a proper route
+            if (this._createdRoutes.some(r => r.type === 'input' && r.moduleIds.some(id => moduleIds.includes(id)))) {
+                continue;
+            }
+            
+            // This is an orphan - the remap-source exists but the null sink is gone
+            const source = this._sources.find(s => s.name === sourceName);
+            const description = source ? source.description : 'Orphaned LichenMixedInput';
+            
+            this._createdRoutes.push({
+                id: `orphan_${Date.now()}_${Math.random()}`,
+                sinkName: sourceName,
+                type: 'input',
+                description: `${description} (orphaned)`,
+                moduleIds: moduleIds,
+                deviceNames: [],
+                isOrphan: true,
+            });
         }
 
         this._notifyListeners();
@@ -192,6 +224,17 @@ var AudioManager = class AudioManager {
                     const sinkMatch = args.match(/sink=(\S+)/);
                     if (sinkMatch) {
                         const key = `sink=${sinkMatch[1]}`;
+                        if (!moduleMap.has(key)) moduleMap.set(key, []);
+                        moduleMap.get(key).push(moduleId);
+                    }
+                }
+
+                // For remap-source, extract source_name
+                if (moduleName === 'module-remap-source') {
+                    const sourceNameMatch = args.match(/source_name=(\S+)/);
+                    if (sourceNameMatch) {
+                        const sourceName = sourceNameMatch[1];
+                        const key = `remap-source=${sourceName}`;
                         if (!moduleMap.has(key)) moduleMap.set(key, []);
                         moduleMap.get(key).push(moduleId);
                     }
@@ -362,6 +405,11 @@ var AudioManager = class AudioManager {
         const route = this._createdRoutes.find(r => r.id === routeId);
         if (!route) return false;
 
+        // Disable hearback if we're removing a route it depends on
+        if (this._hearbackEnabled && (route.type === 'input' || route.type === 'output')) {
+            this.disableHearback();
+        }
+
         // If we have module IDs, unload them
         if (route.moduleIds && route.moduleIds.length > 0) {
             for (const moduleId of route.moduleIds) {
@@ -413,6 +461,9 @@ var AudioManager = class AudioManager {
 
     // Reset - unload all modules we've created
     resetToDefaults() {
+        // Disable hearback first
+        this.disableHearback();
+
         for (const route of this._createdRoutes) {
             for (const moduleId of route.moduleIds) {
                 try {
@@ -465,5 +516,81 @@ var AudioManager = class AudioManager {
             logError(e, 'Failed to set default source');
         }
         return false;
+    }
+
+    // Get hearback state
+    get hearbackEnabled() {
+        return this._hearbackEnabled;
+    }
+
+    // Enable hearback - route mixed input to output so you can hear yourself
+    enableHearback() {
+        // Find the active mixed input route
+        const inputRoute = this._createdRoutes.find(r => r.type === 'input');
+        if (!inputRoute) {
+            log('No mixed input route found for hearback');
+            return false;
+        }
+
+        // Find the active combined output route
+        const outputRoute = this._createdRoutes.find(r => r.type === 'output');
+        if (!outputRoute) {
+            log('No combined output route found for hearback');
+            return false;
+        }
+
+        // Get the null sink monitor (the source that has the mixed mic audio)
+        const nullSinkMonitor = `${inputRoute.sinkName}_null.monitor`;
+        const outputSinkName = outputRoute.sinkName;
+
+        // Create a loopback from the mixed input to the combined output
+        const loopbackCmd = `pactl load-module module-loopback source=${nullSinkMonitor} sink=${outputSinkName} latency_msec=1`;
+        
+        try {
+            const [ok, stdout, stderr, exitStatus] = GLib.spawn_command_line_sync(loopbackCmd);
+            if (ok && exitStatus === 0) {
+                const moduleId = new TextDecoder().decode(stdout).trim();
+                if (moduleId) {
+                    this._hearbackModuleId = parseInt(moduleId);
+                    this._hearbackEnabled = true;
+                    this._notifyListeners();
+                    return true;
+                }
+            }
+        } catch (e) {
+            logError(e, 'Failed to enable hearback');
+        }
+        return false;
+    }
+
+    // Disable hearback
+    disableHearback() {
+        if (this._hearbackModuleId) {
+            try {
+                GLib.spawn_command_line_sync(`pactl unload-module ${this._hearbackModuleId}`);
+            } catch (e) {
+                // Module may already be unloaded
+            }
+            this._hearbackModuleId = null;
+        }
+        this._hearbackEnabled = false;
+        this._notifyListeners();
+        return true;
+    }
+
+    // Toggle hearback
+    setHearback(enabled) {
+        if (enabled) {
+            return this.enableHearback();
+        } else {
+            return this.disableHearback();
+        }
+    }
+
+    // Check if hearback can be enabled (requires both input and output routes)
+    get canEnableHearback() {
+        const hasInput = this._createdRoutes.some(r => r.type === 'input');
+        const hasOutput = this._createdRoutes.some(r => r.type === 'output');
+        return hasInput && hasOutput;
     }
 };

@@ -315,6 +315,33 @@ class MainWindow extends Adw.ApplicationWindow {
             .clear-btn:hover {
                 color: #f85149;
             }
+            
+            .hearback-row {
+                background: rgba(13, 17, 23, 0.9);
+                border-radius: 8px;
+                border: 1px solid rgba(48, 54, 61, 0.6);
+                padding: 12px 16px;
+                margin: 8px 0;
+            }
+            
+            .hearback-row.enabled {
+                border-color: rgba(63, 185, 80, 0.5);
+                background: rgba(63, 185, 80, 0.1);
+            }
+            
+            .hearback-label {
+                font-family: 'Inter', 'SF Pro Display', sans-serif;
+                font-size: 13px;
+                font-weight: 500;
+                color: #e6edf3;
+            }
+            
+            .hearback-desc {
+                font-family: 'Inter', sans-serif;
+                font-size: 10px;
+                color: #6e7681;
+                margin-top: 2px;
+            }
         `;
 
         const provider = new Gtk.CssProvider();
@@ -511,6 +538,46 @@ class MainWindow extends Adw.ApplicationWindow {
         });
         this._resetBtn.connect('clicked', () => this._resetToDefaults());
         panel.append(this._resetBtn);
+
+        // Hearback option
+        this._hearbackRow = new Gtk.Box({
+            orientation: Gtk.Orientation.HORIZONTAL,
+            css_classes: ['hearback-row'],
+            margin_top: 12,
+            visible: false,
+        });
+
+        const hearbackInfoBox = new Gtk.Box({
+            orientation: Gtk.Orientation.VERTICAL,
+            hexpand: true,
+        });
+
+        const hearbackLabel = new Gtk.Label({
+            label: 'Hearback',
+            css_classes: ['hearback-label'],
+            halign: Gtk.Align.START,
+        });
+        hearbackInfoBox.append(hearbackLabel);
+
+        const hearbackDesc = new Gtk.Label({
+            label: 'Hear yourself in output',
+            css_classes: ['hearback-desc'],
+            halign: Gtk.Align.START,
+        });
+        hearbackInfoBox.append(hearbackDesc);
+
+        this._hearbackRow.append(hearbackInfoBox);
+
+        this._hearbackSwitch = new Gtk.Switch({
+            valign: Gtk.Align.CENTER,
+        });
+        this._hearbackSwitch.connect('state-set', (widget, state) => {
+            this._onHearbackToggled(state);
+            return false;
+        });
+        this._hearbackRow.append(this._hearbackSwitch);
+
+        panel.append(this._hearbackRow);
 
         // Created routes section
         this._routesSectionLabel = new Gtk.Label({
@@ -867,6 +934,29 @@ class MainWindow extends Adw.ApplicationWindow {
     _updateStatus() {
         const hasRoutes = this._audioManager.hasActiveRoutes;
         this._resetBtn.sensitive = hasRoutes;
+
+        // Show/hide hearback option based on whether we have both input and output routes
+        const canHearback = this._audioManager.canEnableHearback;
+        this._hearbackRow.set_visible(canHearback);
+
+        // Update hearback switch state (without triggering signal)
+        this._hearbackSwitch.set_active(this._audioManager.hearbackEnabled);
+
+        // Update hearback row styling
+        if (this._audioManager.hearbackEnabled) {
+            this._hearbackRow.add_css_class('enabled');
+        } else {
+            this._hearbackRow.remove_css_class('enabled');
+        }
+    }
+
+    _onHearbackToggled(enabled) {
+        const success = this._audioManager.setHearback(enabled);
+        if (!success && enabled) {
+            // Failed to enable, reset switch
+            this._hearbackSwitch.set_active(false);
+        }
+        this._updateStatus();
     }
 
     _updateRoutesList() {
@@ -935,6 +1025,7 @@ class MainWindow extends Adw.ApplicationWindow {
                 css_classes: ['route-delete', 'flat'],
                 valign: Gtk.Align.CENTER,
             });
+            deleteBtn.set_cursor(Gdk.Cursor.new_from_name('pointer', null));
             deleteBtn.connect('clicked', () => {
                 this._audioManager.removeRoute(route.id);
                 this._updateRoutesList();
