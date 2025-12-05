@@ -243,7 +243,8 @@ var AudioManager = class AudioManager {
         }
 
         const slaves = sinkNames.join(',');
-        const cmd = `pactl load-module module-combine-sink sink_name=${name} slaves=${slaves}`;
+        const sinkDesc = description || `Combined`;
+        const cmd = `pactl load-module module-combine-sink sink_name=${name} slaves=${slaves} sink_properties=device.description="${sinkDesc}"`;
         
         try {
             const [ok, stdout, stderr, exitStatus] = GLib.spawn_command_line_sync(cmd);
@@ -280,12 +281,12 @@ var AudioManager = class AudioManager {
         // then use module-remap-source to expose the monitor as a proper source
         // that browsers/apps will recognize as a microphone (not a monitor)
         
-        const monitorDesc = description || `Mixed Mic (${sourceNames.length} inputs)`;
+        const micDesc = description || `Mixed`;
         const nullSinkName = `${name}_null`;
         const remappedSourceName = `${name}_mic`;
         
-        // Step 1: Create null sink to mix audio into
-        const nullSinkCmd = `pactl load-module module-null-sink sink_name=${nullSinkName} sink_properties=device.description="${monitorDesc}"`;
+        // Step 1: Create null sink to mix audio into (internal, hidden from user)
+        const nullSinkCmd = `pactl load-module module-null-sink sink_name=${nullSinkName} sink_properties=device.description="Lichen Mixer"`;
         
         try {
             let [ok, stdout, stderr, exitStatus] = GLib.spawn_command_line_sync(nullSinkCmd);
@@ -313,7 +314,7 @@ var AudioManager = class AudioManager {
 
             // Step 3: Create a remap-source to expose the monitor as a proper mic source
             // This makes it appear as a real microphone to browsers/apps like Google Meet
-            const remapCmd = `pactl load-module module-remap-source source_name=${remappedSourceName} master=${nullSinkName}.monitor source_properties=device.description="${monitorDesc}"`;
+            const remapCmd = `pactl load-module module-remap-source source_name=${remappedSourceName} master=${nullSinkName}.monitor source_properties=device.description="${micDesc}"`;
             const [rok, rstdout] = GLib.spawn_command_line_sync(remapCmd);
             if (rok) {
                 const remapId = new TextDecoder().decode(rstdout).trim();
