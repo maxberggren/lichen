@@ -248,39 +248,60 @@ class MainWindow extends Adw.ApplicationWindow {
             
             .route-item {
                 background: rgba(13, 17, 23, 0.9);
-                border-radius: 6px;
+                border-radius: 8px;
                 border: 1px solid rgba(48, 54, 61, 0.6);
-                padding: 8px 10px;
+                padding: 12px 16px;
+                margin: 4px 0;
+                transition: all 200ms ease;
+            }
+            
+            .route-item:hover {
+                border-color: rgba(88, 166, 255, 0.4);
+                background: rgba(22, 27, 34, 0.95);
             }
             
             .route-item.output {
-                border-left: 3px solid #3fb950;
+                border-color: rgba(63, 185, 80, 0.4);
             }
             
             .route-item.input {
-                border-left: 3px solid #f78166;
+                border-color: rgba(247, 129, 102, 0.4);
             }
             
             .route-name {
-                font-family: 'Inter', sans-serif;
-                font-size: 11px;
+                font-family: 'Inter', 'SF Pro Display', sans-serif;
+                font-size: 13px;
                 font-weight: 500;
                 color: #e6edf3;
             }
             
             .route-type {
-                font-family: 'JetBrains Mono', monospace;
-                font-size: 9px;
+                font-family: 'JetBrains Mono', 'SF Mono', monospace;
+                font-size: 10px;
                 color: #6e7681;
+                margin-top: 2px;
+            }
+            
+            .route-icon {
+                color: #8b949e;
+                margin-right: 12px;
+            }
+            
+            .route-icon.output {
+                color: #3fb950;
+            }
+            
+            .route-icon.input {
+                color: #f78166;
             }
             
             .route-delete {
-                color: #f85149;
+                color: #6e7681;
                 padding: 2px;
             }
             
             .route-delete:hover {
-                color: #ff7b72;
+                color: #f85149;
             }
             
             .clear-btn {
@@ -369,12 +390,6 @@ class MainWindow extends Adw.ApplicationWindow {
             css_classes: ['panel'],
         });
 
-        const title = new Gtk.Label({
-            label: 'AVAILABLE DEVICES',
-            css_classes: ['section-title'],
-            halign: Gtk.Align.START,
-        });
-        panel.append(title);
 
         // Scrollable list
         const scrolled = new Gtk.ScrolledWindow({
@@ -434,7 +449,7 @@ class MainWindow extends Adw.ApplicationWindow {
         // Output zone (headphones)
         this._outputZone = this._createRouterZone(
             'OUTPUT',
-            '🎧 Drag headphones here',
+            '',
             'output-target',
             this._selectedOutputs
         );
@@ -443,7 +458,7 @@ class MainWindow extends Adw.ApplicationWindow {
         // Input zone (microphones)
         this._inputZone = this._createRouterZone(
             'INPUT MIX',
-            '🎤 Drag microphones here',
+            '',
             'input-target',
             this._selectedInputs
         );
@@ -469,15 +484,17 @@ class MainWindow extends Adw.ApplicationWindow {
         });
         container.append(labelWidget);
 
-        const chipsBox = new Gtk.FlowBox({
-            selection_mode: Gtk.SelectionMode.NONE,
-            homogeneous: false,
-            max_children_per_line: 3,
-            row_spacing: 4,
-            column_spacing: 4,
+        const scrolled = new Gtk.ScrolledWindow({
             vexpand: true,
+            hscrollbar_policy: Gtk.PolicyType.NEVER,
         });
-        container.append(chipsBox);
+
+        const chipsBox = new Gtk.Box({
+            orientation: Gtk.Orientation.VERTICAL,
+            spacing: 4,
+        });
+        scrolled.set_child(chipsBox);
+        container.append(scrolled);
 
         const hintLabel = new Gtk.Label({
             label: hint,
@@ -505,29 +522,9 @@ class MainWindow extends Adw.ApplicationWindow {
         });
         panel.append(title);
 
-        // Status
-        const statusBox = new Gtk.Box({
-            orientation: Gtk.Orientation.HORIZONTAL,
-            spacing: 8,
-            margin_bottom: 12,
-        });
-        
-        const statusLabel = new Gtk.Label({
-            label: 'Status:',
-            css_classes: ['device-id'],
-        });
-        statusBox.append(statusLabel);
-
-        this._statusBadge = new Gtk.Label({
-            label: 'READY',
-            css_classes: ['status-badge', 'idle'],
-        });
-        statusBox.append(this._statusBadge);
-        panel.append(statusBox);
-
         // Apply routes button (creates both output and input)
         this._applyBtn = new Gtk.Button({
-            label: '▶ Apply Routes',
+            label: 'Apply Routes',
             css_classes: ['action-button'],
             sensitive: false,
         });
@@ -536,7 +533,7 @@ class MainWindow extends Adw.ApplicationWindow {
 
         // Reset to defaults button
         this._resetBtn = new Gtk.Button({
-            label: '⟲ Reset to Defaults',
+            label: 'Reset to Defaults',
             css_classes: ['action-button', 'destructive'],
             margin_top: 4,
             sensitive: false,
@@ -587,7 +584,7 @@ class MainWindow extends Adw.ApplicationWindow {
 
         // Output devices section
         const outputTitle = new Gtk.Label({
-            label: '🎧 OUTPUTS',
+            label: 'AVAILABLE OUTPUTS',
             css_classes: ['section-title'],
             halign: Gtk.Align.START,
             margin_top: 8,
@@ -601,7 +598,7 @@ class MainWindow extends Adw.ApplicationWindow {
 
         // Input devices section
         const inputTitle = new Gtk.Label({
-            label: '🎤 INPUTS',
+            label: 'AVAILABLE INPUTS',
             css_classes: ['section-title'],
             halign: Gtk.Align.START,
             margin_top: 16,
@@ -694,38 +691,61 @@ class MainWindow extends Adw.ApplicationWindow {
             child = next;
         }
 
-        // Add chips for selected items
+        // Add cards for selected items (same styling as device cards)
         for (const name of selectedSet) {
             const devices = type === 'output' ? this._audioManager.sinks : this._audioManager.sources;
             const device = devices.find(d => d.name === name);
             if (!device) continue;
 
-            const chip = new Gtk.Box({
-                css_classes: ['chip'],
+            const card = new Gtk.Box({
                 orientation: Gtk.Orientation.HORIZONTAL,
+                css_classes: ['device-card', type, 'selected'],
             });
 
-            const label = new Gtk.Label({
-                label: device.description.substring(0, 20),
-                css_classes: ['chip-label'],
+            // Icon
+            const icon = new Gtk.Image({
+                icon_name: type === 'output' ? 'audio-headphones-symbolic' : 'audio-input-microphone-symbolic',
+                css_classes: ['device-icon', type],
+            });
+            card.append(icon);
+
+            // Info
+            const infoBox = new Gtk.Box({
+                orientation: Gtk.Orientation.VERTICAL,
+                hexpand: true,
+            });
+
+            const nameLabel = new Gtk.Label({
+                label: device.description,
+                css_classes: ['device-name'],
+                halign: Gtk.Align.START,
                 ellipsize: 3,
-                max_width_chars: 15,
+                max_width_chars: 20,
             });
-            chip.append(label);
+            infoBox.append(nameLabel);
 
-            const removeBtn = new Gtk.Button({
-                icon_name: 'window-close-symbolic',
-                css_classes: ['chip-remove', 'flat'],
+            const idLabel = new Gtk.Label({
+                label: device.name,
+                css_classes: ['device-id'],
+                halign: Gtk.Align.START,
+                ellipsize: 3,
+                max_width_chars: 25,
             });
-            removeBtn.connect('clicked', () => {
+            infoBox.append(idLabel);
+
+            card.append(infoBox);
+
+            // Make clickable to deselect
+            const gesture = new Gtk.GestureClick();
+            gesture.connect('released', () => {
                 selectedSet.delete(name);
                 this._updateZoneChips(zone, selectedSet, type);
                 this._updateActionButtons();
                 this._updateDeviceCardSelection(name, false);
             });
-            chip.append(removeBtn);
+            card.add_controller(gesture);
 
-            zone.chipsBox.append(chip);
+            zone.chipsBox.append(card);
         }
 
         // Update zone appearance
@@ -761,13 +781,13 @@ class MainWindow extends Adw.ApplicationWindow {
         
         // Update button label to show what will be created
         if (hasOutputs && hasInputs) {
-            this._applyBtn.label = '▶ Apply Routes (Output + Input)';
+            this._applyBtn.label = 'Apply Routes (Output + Input)';
         } else if (hasOutputs) {
-            this._applyBtn.label = '▶ Apply Routes (Output)';
+            this._applyBtn.label = 'Apply Routes (Output)';
         } else if (hasInputs) {
-            this._applyBtn.label = '▶ Apply Routes (Input)';
+            this._applyBtn.label = 'Apply Routes (Input)';
         } else {
-            this._applyBtn.label = '▶ Apply Routes';
+            this._applyBtn.label = 'Apply Routes';
         }
     }
 
@@ -790,14 +810,13 @@ class MainWindow extends Adw.ApplicationWindow {
     }
 
     _applyRoutes() {
-        this._statusBadge.label = 'CREATING...';
         let success = false;
 
         // Create combined output if 2+ outputs selected
         if (this._selectedOutputs.size >= 2) {
             const sinkNames = Array.from(this._selectedOutputs);
             const combinedName = `lichen_output_${Date.now()}`;
-            const description = `🎧 Combined (${sinkNames.length} outputs)`;
+            const description = `Combined (${sinkNames.length} outputs)`;
 
             if (this._audioManager.createCombinedSink(combinedName, sinkNames, description)) {
                 this._audioManager.setDefaultSink(combinedName);
@@ -809,7 +828,7 @@ class MainWindow extends Adw.ApplicationWindow {
         if (this._selectedInputs.size >= 2) {
             const sourceNames = Array.from(this._selectedInputs);
             const mixedName = `lichen_input_${Date.now()}`;
-            const description = `🎤 Mixed (${sourceNames.length} inputs)`;
+            const description = `Mixed (${sourceNames.length} inputs)`;
 
             if (this._audioManager.createMixedSource(mixedName, sourceNames, description)) {
                 this._audioManager.setDefaultSource(`${mixedName}_null.monitor`);
@@ -821,22 +840,11 @@ class MainWindow extends Adw.ApplicationWindow {
             this._updateStatus();
             this._updateRoutesList();
             // Don't clear selection - user may want to see what's selected
-        } else {
-            this._statusBadge.label = 'ERROR';
         }
     }
 
     _updateStatus() {
         const hasRoutes = this._audioManager.hasActiveRoutes;
-        if (hasRoutes) {
-            this._statusBadge.label = 'ACTIVE';
-            this._statusBadge.remove_css_class('idle');
-            this._statusBadge.add_css_class('running');
-        } else {
-            this._statusBadge.label = 'READY';
-            this._statusBadge.remove_css_class('running');
-            this._statusBadge.add_css_class('idle');
-        }
         this._resetBtn.sensitive = hasRoutes;
     }
 
@@ -856,8 +864,14 @@ class MainWindow extends Adw.ApplicationWindow {
             const item = new Gtk.Box({
                 orientation: Gtk.Orientation.HORIZONTAL,
                 css_classes: ['route-item', route.type],
-                spacing: 8,
             });
+
+            // Icon
+            const icon = new Gtk.Image({
+                icon_name: route.type === 'output' ? 'audio-headphones-symbolic' : 'audio-input-microphone-symbolic',
+                css_classes: ['route-icon', route.type],
+            });
+            item.append(icon);
 
             const infoBox = new Gtk.Box({
                 orientation: Gtk.Orientation.VERTICAL,
@@ -869,16 +883,29 @@ class MainWindow extends Adw.ApplicationWindow {
                 css_classes: ['route-name'],
                 halign: Gtk.Align.START,
                 ellipsize: 3,
-                max_width_chars: 18,
+                max_width_chars: 20,
             });
             infoBox.append(nameLabel);
 
-            const typeLabel = new Gtk.Label({
-                label: route.type.toUpperCase(),
-                css_classes: ['route-type'],
-                halign: Gtk.Align.START,
-            });
-            infoBox.append(typeLabel);
+            // Show device names if available
+            if (route.deviceNames && route.deviceNames.length > 0) {
+                const devicesLabel = new Gtk.Label({
+                    label: route.deviceNames.join(' + '),
+                    css_classes: ['route-type'],
+                    halign: Gtk.Align.START,
+                    ellipsize: 3,
+                    max_width_chars: 25,
+                    wrap: true,
+                });
+                infoBox.append(devicesLabel);
+            } else {
+                const typeLabel = new Gtk.Label({
+                    label: route.type.toUpperCase(),
+                    css_classes: ['route-type'],
+                    halign: Gtk.Align.START,
+                });
+                infoBox.append(typeLabel);
+            }
 
             item.append(infoBox);
 

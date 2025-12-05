@@ -17,3 +17,4 @@ const { LichenApplication } = imports.app.application;
 const app = new LichenApplication();
 app.run([imports.system.programInvocationName].concat(ARGV));
 
+

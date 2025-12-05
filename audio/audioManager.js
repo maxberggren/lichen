@@ -105,8 +105,9 @@ var AudioManager = class AudioManager {
                     id: `output_restored_${Date.now()}_${Math.random()}`,
                     sinkName: sink.name,
                     type: 'output',
-                    description: `🎧 ${sink.description}`,
+                    description: sink.description,
                     moduleIds: moduleIds,
+                    deviceNames: [], // Unknown for restored routes
                 });
             }
         }
@@ -134,8 +135,9 @@ var AudioManager = class AudioManager {
                     id: `input_restored_${Date.now()}_${Math.random()}`,
                     sinkName: baseName,
                     type: 'input',
-                    description: `🎤 ${sink.description || 'Mixed Input'}`,
+                    description: sink.description || 'Mixed Input',
                     moduleIds: moduleIds,
+                    deviceNames: [], // Unknown for restored routes
                 });
             }
         }
@@ -237,12 +239,18 @@ var AudioManager = class AudioManager {
                 const moduleId = new TextDecoder().decode(stdout).trim();
                 if (moduleId) {
                     const routeId = `output_${Date.now()}`;
+                    // Get descriptions for the combined sinks
+                    const deviceDescriptions = sinkNames.map(sn => {
+                        const sink = this._sinks.find(s => s.name === sn);
+                        return sink ? sink.description : sn;
+                    });
                     this._createdRoutes.push({
                         id: routeId,
                         sinkName: name,
                         type: 'output',
                         description: description || `Combined: ${sinkNames.length} outputs`,
                         moduleIds: [parseInt(moduleId)],
+                        deviceNames: deviceDescriptions,
                     });
                 }
                 this.refresh();
@@ -285,12 +293,18 @@ var AudioManager = class AudioManager {
             }
 
             const routeId = `input_${Date.now()}`;
+            // Get descriptions for the mixed sources
+            const deviceDescriptions = sourceNames.map(sn => {
+                const source = this._sources.find(s => s.name === sn);
+                return source ? source.description : sn;
+            });
             this._createdRoutes.push({
                 id: routeId,
                 sinkName: name,
                 type: 'input',
                 description: description || `Mixed: ${sourceNames.length} inputs`,
                 moduleIds: moduleIds,
+                deviceNames: deviceDescriptions,
             });
 
             this.refresh();
@@ -411,4 +425,3 @@ var AudioManager = class AudioManager {
         return false;
     }
 };
-
