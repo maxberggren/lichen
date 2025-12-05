@@ -88,15 +88,15 @@ class MainWindow extends Adw.ApplicationWindow {
             }
             
             .device-card.output.selected {
-                border-color: #3fb950;
-                background: rgba(63, 185, 80, 0.1);
-                box-shadow: 0 0 20px rgba(63, 185, 80, 0.15);
+                border-color: #58a6ff;
+                background: rgba(88, 166, 255, 0.1);
+                box-shadow: 0 0 20px rgba(88, 166, 255, 0.15);
             }
             
             .device-card.input.selected {
-                border-color: #f78166;
-                background: rgba(247, 129, 102, 0.1);
-                box-shadow: 0 0 20px rgba(247, 129, 102, 0.15);
+                border-color: #58a6ff;
+                background: rgba(88, 166, 255, 0.1);
+                box-shadow: 0 0 20px rgba(88, 166, 255, 0.15);
             }
             
             .device-name {
@@ -119,41 +119,42 @@ class MainWindow extends Adw.ApplicationWindow {
             }
             
             .device-icon.output {
-                color: #3fb950;
+                color: #8b949e;
             }
             
             .device-icon.input {
-                color: #f78166;
+                color: #8b949e;
             }
             
-            .router-node {
-                background: linear-gradient(135deg, rgba(88, 166, 255, 0.15) 0%, rgba(88, 166, 255, 0.05) 100%);
-                border-radius: 16px;
-                border: 2px dashed rgba(88, 166, 255, 0.4);
-                padding: 24px;
-                min-height: 120px;
+            .router-zone-wrapper {
+                margin-bottom: 4px;
             }
             
-            .router-node.output-target {
-                background: linear-gradient(135deg, rgba(63, 185, 80, 0.15) 0%, rgba(63, 185, 80, 0.05) 100%);
-                border-color: rgba(63, 185, 80, 0.4);
-            }
-            
-            .router-node.input-target {
-                background: linear-gradient(135deg, rgba(247, 129, 102, 0.15) 0%, rgba(247, 129, 102, 0.05) 100%);
-                border-color: rgba(247, 129, 102, 0.4);
-            }
-            
-            .router-node.has-items {
-                border-style: solid;
-            }
-            
-            .router-label {
+            .sub-title {
                 font-family: 'JetBrains Mono', 'SF Mono', monospace;
-                font-size: 10px;
+                font-size: 9px;
                 font-weight: 600;
                 color: #6e7681;
                 letter-spacing: 1px;
+                margin-bottom: 6px;
+            }
+            
+            .router-node {
+                background: rgba(13, 17, 23, 0.9);
+                border-radius: 8px;
+                border: 1px solid rgba(48, 54, 61, 0.6);
+                padding: 12px;
+                min-height: 80px;
+            }
+            
+            .router-node.output-target {
+            }
+            
+            .router-node.input-target {
+            }
+            
+            .router-node.has-items {
+                border-color: rgba(88, 166, 255, 0.4);
             }
             
             .router-hint {
@@ -261,11 +262,11 @@ class MainWindow extends Adw.ApplicationWindow {
             }
             
             .route-item.output {
-                border-color: rgba(63, 185, 80, 0.4);
+                border-color: rgba(88, 166, 255, 0.4);
             }
             
             .route-item.input {
-                border-color: rgba(247, 129, 102, 0.4);
+                border-color: rgba(88, 166, 255, 0.4);
             }
             
             .route-name {
@@ -288,11 +289,11 @@ class MainWindow extends Adw.ApplicationWindow {
             }
             
             .route-icon.output {
-                color: #3fb950;
+                color: #8b949e;
             }
             
             .route-icon.input {
-                color: #f78166;
+                color: #8b949e;
             }
             
             .route-delete {
@@ -332,26 +333,6 @@ class MainWindow extends Adw.ApplicationWindow {
             css_classes: ['main-container'],
         });
 
-        // Header bar
-        const headerBar = new Adw.HeaderBar({
-            css_classes: ['header-bar'],
-        });
-
-        const titleLabel = new Gtk.Label({
-            label: '◉ LICHEN',
-            css_classes: ['app-title'],
-        });
-        headerBar.set_title_widget(titleLabel);
-
-        // Refresh button
-        const refreshBtn = new Gtk.Button({
-            icon_name: 'view-refresh-symbolic',
-            tooltip_text: 'Refresh devices (Ctrl+R)',
-        });
-        refreshBtn.connect('clicked', () => this._audioManager.refresh());
-        headerBar.pack_end(refreshBtn);
-
-        mainBox.append(headerBar);
 
         // Content area with 3 columns
         const contentBox = new Gtk.Box({
@@ -414,41 +395,23 @@ class MainWindow extends Adw.ApplicationWindow {
             spacing: 16,
         });
 
-        // Header with title and clear button
-        const headerBox = new Gtk.Box({
-            orientation: Gtk.Orientation.HORIZONTAL,
-        });
-
         const title = new Gtk.Label({
             label: 'AUDIO ROUTER',
             css_classes: ['section-title'],
             halign: Gtk.Align.START,
-            hexpand: true,
         });
-        headerBox.append(title);
+        panel.append(title);
 
-        const clearBtn = new Gtk.Button({
-            icon_name: 'edit-clear-symbolic',
-            css_classes: ['clear-btn', 'flat'],
-            tooltip_text: 'Clear selection',
-            valign: Gtk.Align.CENTER,
-        });
-        clearBtn.connect('clicked', () => this._clearSelection());
-        headerBox.append(clearBtn);
-
-        panel.append(headerBox);
-
-        // Two router zones side by side
+        // Two router zones stacked vertically
         const zonesBox = new Gtk.Box({
-            orientation: Gtk.Orientation.HORIZONTAL,
-            spacing: 16,
+            orientation: Gtk.Orientation.VERTICAL,
+            spacing: 12,
             vexpand: true,
-            homogeneous: true,
         });
 
         // Output zone (headphones)
         this._outputZone = this._createRouterZone(
-            'OUTPUT',
+            'OUTPUT MIX',
             '',
             'output-target',
             this._selectedOutputs
@@ -470,19 +433,25 @@ class MainWindow extends Adw.ApplicationWindow {
     }
 
     _createRouterZone(label, hint, cssClass, selectedSet) {
-        const container = new Gtk.Box({
+        // Wrapper that contains label + box
+        const wrapper = new Gtk.Box({
             orientation: Gtk.Orientation.VERTICAL,
-            css_classes: ['router-node', cssClass],
+            css_classes: ['router-zone-wrapper'],
             vexpand: true,
         });
 
         const labelWidget = new Gtk.Label({
             label: label,
-            css_classes: ['router-label'],
+            css_classes: ['section-title'],
             halign: Gtk.Align.START,
-            margin_bottom: 8,
         });
-        container.append(labelWidget);
+        wrapper.append(labelWidget);
+
+        const container = new Gtk.Box({
+            orientation: Gtk.Orientation.VERTICAL,
+            css_classes: ['router-node', cssClass],
+            vexpand: true,
+        });
 
         const scrolled = new Gtk.ScrolledWindow({
             vexpand: true,
@@ -505,7 +474,9 @@ class MainWindow extends Adw.ApplicationWindow {
         });
         container.append(hintLabel);
 
-        return { container, chipsBox, hintLabel };
+        wrapper.append(container);
+
+        return { container: wrapper, innerContainer: container, chipsBox, hintLabel };
     }
 
     _createActionsPanel() {
@@ -657,6 +628,9 @@ class MainWindow extends Adw.ApplicationWindow {
         });
         card.add_controller(gesture);
 
+        // Set pointer cursor
+        card.set_cursor(Gdk.Cursor.new_from_name('pointer', null));
+
         // Store reference
         card._device = device;
         card._type = type;
@@ -745,15 +719,18 @@ class MainWindow extends Adw.ApplicationWindow {
             });
             card.add_controller(gesture);
 
+            // Set pointer cursor
+            card.set_cursor(Gdk.Cursor.new_from_name('pointer', null));
+
             zone.chipsBox.append(card);
         }
 
         // Update zone appearance
         if (selectedSet.size > 0) {
-            zone.container.add_css_class('has-items');
+            zone.innerContainer.add_css_class('has-items');
             zone.hintLabel.set_visible(false);
         } else {
-            zone.container.remove_css_class('has-items');
+            zone.innerContainer.remove_css_class('has-items');
             zone.hintLabel.set_visible(true);
         }
     }
@@ -809,30 +786,74 @@ class MainWindow extends Adw.ApplicationWindow {
         this._updateActionButtons();
     }
 
+    _routeAlreadyExists(deviceNames, type) {
+        // Check if a route with the exact same devices already exists
+        const routes = this._audioManager.createdRoutes.filter(r => r.type === type);
+        const sortedNew = [...deviceNames].sort();
+        
+        for (const route of routes) {
+            if (!route.deviceNames || route.deviceNames.length === 0) continue;
+            
+            // Get the actual device names (not descriptions) from the route
+            // We need to compare against the original sink/source names
+            const sortedExisting = [...route.deviceNames].sort();
+            
+            if (sortedNew.length === sortedExisting.length &&
+                sortedNew.every((name, i) => name === sortedExisting[i])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     _applyRoutes() {
         let success = false;
+        let skippedOutput = false;
+        let skippedInput = false;
 
         // Create combined output if 2+ outputs selected
         if (this._selectedOutputs.size >= 2) {
             const sinkNames = Array.from(this._selectedOutputs);
-            const combinedName = `lichen_output_${Date.now()}`;
-            const description = `Combined (${sinkNames.length} outputs)`;
+            
+            // Get descriptions for comparison
+            const deviceDescriptions = sinkNames.map(sn => {
+                const sink = this._audioManager._sinks.find(s => s.name === sn);
+                return sink ? sink.description : sn;
+            });
+            
+            if (this._routeAlreadyExists(deviceDescriptions, 'output')) {
+                skippedOutput = true;
+            } else {
+                const combinedName = `lichen_output_${Date.now()}`;
+                const description = `Combined (${sinkNames.length} outputs)`;
 
-            if (this._audioManager.createCombinedSink(combinedName, sinkNames, description)) {
-                this._audioManager.setDefaultSink(combinedName);
-                success = true;
+                if (this._audioManager.createCombinedSink(combinedName, sinkNames, description)) {
+                    this._audioManager.setDefaultSink(combinedName);
+                    success = true;
+                }
             }
         }
 
         // Create mixed input if 2+ inputs selected
         if (this._selectedInputs.size >= 2) {
             const sourceNames = Array.from(this._selectedInputs);
-            const mixedName = `lichen_input_${Date.now()}`;
-            const description = `Mixed (${sourceNames.length} inputs)`;
+            
+            // Get descriptions for comparison
+            const deviceDescriptions = sourceNames.map(sn => {
+                const source = this._audioManager._sources.find(s => s.name === sn);
+                return source ? source.description : sn;
+            });
+            
+            if (this._routeAlreadyExists(deviceDescriptions, 'input')) {
+                skippedInput = true;
+            } else {
+                const mixedName = `lichen_input_${Date.now()}`;
+                const description = `Mixed (${sourceNames.length} inputs)`;
 
-            if (this._audioManager.createMixedSource(mixedName, sourceNames, description)) {
-                this._audioManager.setDefaultSource(`${mixedName}_null.monitor`);
-                success = true;
+                if (this._audioManager.createMixedSource(mixedName, sourceNames, description)) {
+                    this._audioManager.setDefaultSource(`${mixedName}_null.monitor`);
+                    success = true;
+                }
             }
         }
 

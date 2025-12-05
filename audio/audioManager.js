@@ -209,13 +209,25 @@ var AudioManager = class AudioManager {
     }
 
     get sources() {
-        // Filter out sources we created (null sink monitors + any lichen_* sources)
-        const createdNames = this._createdRoutes
-            .filter(r => r.type === 'input')
-            .map(r => `${r.sinkName}_null`);
+        // Filter out internal lichen sources that shouldn't be shown to users
+        return this._sources.filter(s => {
+            // Hide monitors of combined output sinks (not useful as mic)
+            if (s.name.startsWith('lichen_output_') && s.name.endsWith('.monitor')) {
+                return false;
+            }
+            // Hide the internal null sink monitors (the _mic remapped source is the user-facing one)
+            if (s.name.startsWith('lichen_input_') && s.name.endsWith('_null.monitor')) {
+                return false;
+            }
+            return true;
+        });
+    }
+    
+    // Get the mixed input sources (virtual mics) we've created
+    get mixedInputSources() {
+        // Return the remapped sources (ending in _mic) which are the proper virtual mics
         return this._sources.filter(s => 
-            !createdNames.includes(s.name) && 
-            !s.name.startsWith('lichen_')
+            s.name.startsWith('lichen_input_') && s.name.endsWith('_mic')
         );
     }
 
@@ -264,9 +276,16 @@ var AudioManager = class AudioManager {
 
     // Create a virtual source that mixes multiple microphones
     createMixedSource(name, sourceNames, description) {
-        // This requires creating a null sink and using loopbacks
-        // First create null sink
-        const nullSinkCmd = `pactl load-module module-null-sink sink_name=${name}_null sink_properties=device.description="${name}"`;
+        // Strategy: Create a null sink, loopback all sources into it,
+        // then use module-remap-source to expose the monitor as a proper source
+        // that browsers/apps will recognize as a microphone (not a monitor)
+        
+        const monitorDesc = description || `Mixed Mic (${sourceNames.length} inputs)`;
+        const nullSinkName = `${name}_null`;
+        const remappedSourceName = `${name}_mic`;
+        
+        // Step 1: Create null sink to mix audio into
+        const nullSinkCmd = `pactl load-module module-null-sink sink_name=${nullSinkName} sink_properties=device.description="${monitorDesc}"`;
         
         try {
             let [ok, stdout, stderr, exitStatus] = GLib.spawn_command_line_sync(nullSinkCmd);
@@ -280,15 +299,26 @@ var AudioManager = class AudioManager {
                 moduleIds.push(parseInt(nullModuleId));
             }
 
-            // Create loopback for each source to the null sink
+            // Step 2: Create loopback for each source to the null sink
             for (const sourceName of sourceNames) {
-                const loopbackCmd = `pactl load-module module-loopback source=${sourceName} sink=${name}_null latency_msec=1`;
+                const loopbackCmd = `pactl load-module module-loopback source=${sourceName} sink=${nullSinkName} latency_msec=1`;
                 const [lok, lstdout] = GLib.spawn_command_line_sync(loopbackCmd);
                 if (lok) {
                     const loopbackId = new TextDecoder().decode(lstdout).trim();
                     if (loopbackId) {
                         moduleIds.push(parseInt(loopbackId));
                     }
+                }
+            }
+
+            // Step 3: Create a remap-source to expose the monitor as a proper mic source
+            // This makes it appear as a real microphone to browsers/apps like Google Meet
+            const remapCmd = `pactl load-module module-remap-source source_name=${remappedSourceName} master=${nullSinkName}.monitor source_properties=device.description="${monitorDesc}"`;
+            const [rok, rstdout] = GLib.spawn_command_line_sync(remapCmd);
+            if (rok) {
+                const remapId = new TextDecoder().decode(rstdout).trim();
+                if (remapId) {
+                    moduleIds.push(parseInt(remapId));
                 }
             }
 
@@ -301,6 +331,7 @@ var AudioManager = class AudioManager {
             this._createdRoutes.push({
                 id: routeId,
                 sinkName: name,
+                sourceName: remappedSourceName,  // Track the actual source name for apps
                 type: 'input',
                 description: description || `Mixed: ${sourceNames.length} inputs`,
                 moduleIds: moduleIds,
