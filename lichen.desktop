@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Lichen
+Comment=Multi-headphone audio router for Linux
+Exec=gjs /usr/share/lichen/lichen.js
+Icon=audio-headphones
+Terminal=false
+Type=Application
+Categories=AudioVideo;Audio;Mixer;
+Keywords=audio;headphones;mixer;pulseaudio;pipewire;bluetooth;
+

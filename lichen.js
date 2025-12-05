@@ -8,12 +8,12 @@ const { GLib } = imports.gi;
 const scriptDir = GLib.path_get_dirname(imports.system.programPath);
 imports.searchPath.unshift(scriptDir);
 
-const { JotApplication } = imports.app.application;
+const { LichenApplication } = imports.app.application;
 
 // ============================================================================
-// Entry Point
+// Entry Point - Lichen: Multi-Headphone Audio Router for Linux
 // ============================================================================
 
-const app = new JotApplication();
+const app = new LichenApplication();
 app.run([imports.system.programInvocationName].concat(ARGV));
 
