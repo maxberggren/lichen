@@ -243,7 +243,7 @@ var AudioManager = class AudioManager {
         }
 
         const slaves = sinkNames.join(',');
-        const sinkDesc = description || `Combined`;
+        const sinkDesc = description || `LichenMixedOutput`;
         const cmd = `pactl load-module module-combine-sink sink_name=${name} slaves=${slaves} sink_properties=device.description="${sinkDesc}"`;
         
         try {
@@ -281,12 +281,13 @@ var AudioManager = class AudioManager {
         // then use module-remap-source to expose the monitor as a proper source
         // that browsers/apps will recognize as a microphone (not a monitor)
         
-        const micDesc = description || `Mixed`;
+        const micDesc = description || `LichenMixedInput`;
         const nullSinkName = `${name}_null`;
         const remappedSourceName = `${name}_mic`;
         
         // Step 1: Create null sink to mix audio into (internal, hidden from user)
-        const nullSinkCmd = `pactl load-module module-null-sink sink_name=${nullSinkName} sink_properties=device.description="Lichen Mixer"`;
+        // Mark as internal with device.class=filter so apps like Google Meet hide it
+        const nullSinkCmd = `pactl load-module module-null-sink sink_name=${nullSinkName} sink_properties='device.description="LichenInternal" device.class="filter"'`;
         
         try {
             let [ok, stdout, stderr, exitStatus] = GLib.spawn_command_line_sync(nullSinkCmd);

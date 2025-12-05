@@ -825,7 +825,7 @@ class MainWindow extends Adw.ApplicationWindow {
                 skippedOutput = true;
             } else {
                 const combinedName = `lichen_output_${Date.now()}`;
-                const description = `Combined (${sinkNames.length} outputs)`;
+                const description = `LichenMixedOutput`;
 
                 if (this._audioManager.createCombinedSink(combinedName, sinkNames, description)) {
                     this._audioManager.setDefaultSink(combinedName);
@@ -848,7 +848,7 @@ class MainWindow extends Adw.ApplicationWindow {
                 skippedInput = true;
             } else {
                 const mixedName = `lichen_input_${Date.now()}`;
-                const description = `Mixed (${sourceNames.length} inputs)`;
+                const description = `LichenMixedInput`;
 
                 if (this._audioManager.createMixedSource(mixedName, sourceNames, description)) {
                     this._audioManager.setDefaultSource(`${mixedName}_null.monitor`);
