@@ -131,11 +131,16 @@ var AudioManager = class AudioManager {
                     }
                 }
 
+                // Find the remapped source (_mic) to get the user-facing description
+                const remappedSourceName = `${baseName}_mic`;
+                const remappedSource = this._sources.find(s => s.name === remappedSourceName);
+                const description = remappedSource ? remappedSource.description : 'LichenMixedInput';
+
                 this._createdRoutes.push({
                     id: `input_restored_${Date.now()}_${Math.random()}`,
                     sinkName: baseName,
                     type: 'input',
-                    description: sink.description || 'Mixed Input',
+                    description: description,
                     moduleIds: moduleIds,
                     deviceNames: [], // Unknown for restored routes
                 });
@@ -217,6 +222,10 @@ var AudioManager = class AudioManager {
             }
             // Hide the internal null sink monitors (the _mic remapped source is the user-facing one)
             if (s.name.startsWith('lichen_input_') && s.name.endsWith('_null.monitor')) {
+                return false;
+            }
+            // Hide the remapped _mic sources (these are our created virtual mics, shown in routes)
+            if (s.name.startsWith('lichen_input_') && s.name.endsWith('_mic')) {
                 return false;
             }
             return true;

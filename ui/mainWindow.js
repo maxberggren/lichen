@@ -72,7 +72,7 @@ class MainWindow extends Adw.ApplicationWindow {
                 border-radius: 8px;
                 border: 1px solid rgba(48, 54, 61, 0.6);
                 padding: 12px 16px;
-                margin: 4px 0;
+                margin: 4px 0 0 0;
                 transition: all 200ms ease;
             }
             
