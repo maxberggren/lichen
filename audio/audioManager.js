@@ -11,7 +11,7 @@ var AudioManager = class AudioManager {
         this._listeners = [];
         this._createdRoutes = [];  // Track routes we've created { id, name, type, description, moduleIds }
         this._hearbackModuleId = null;  // Track hearback loopback module
-        this._hearbackVolume = 0;  // 0-100 percent
+        this._hearbackVolume = 70;  // 0-100 percent, default to 70%
         this._hearbackSinkInputIndex = null;  // Track the sink-input index for volume control
         
         this.refresh();
@@ -190,6 +190,10 @@ var AudioManager = class AudioManager {
         const modulesOutput = this._runPactl('list modules short');
         const lines = modulesOutput.split('\n');
         
+        // Get fresh sink list directly from pactl (not filtered)
+        const sinksOutput = this._runPactl('list sinks short');
+        const sourcesOutput = this._runPactl('list sources short');
+        
         for (const line of lines) {
             if (!line.includes('module-loopback')) continue;
             if (!line.includes('lichen_input_') || !line.includes('lichen_output_')) continue;
@@ -198,8 +202,13 @@ var AudioManager = class AudioManager {
             const parts = line.split('\t');
             if (parts.length < 3) continue;
             
-            const moduleId = parts[0];
+            const moduleId = parseInt(parts[0]);
             const args = parts[2] || '';
+            
+            // Skip if this is our currently tracked hearback module
+            if (this._hearbackModuleId && moduleId === this._hearbackModuleId) {
+                continue;
+            }
             
             // Extract source and sink from args
             const sourceMatch = args.match(/source=([^\s]+)/);
@@ -209,14 +218,14 @@ var AudioManager = class AudioManager {
                 const sourceName = sourceMatch[1];
                 const sinkName = sinkMatch[1];
                 
-                // Check if the sink exists
-                const sinkExists = this._sinks.some(s => s.name === sinkName);
-                // Check if the source exists (need to check raw sources including monitors)
-                const sourceExists = this._runPactl('list sources short').includes(sourceName);
+                // Check if the sink exists (use fresh pactl output)
+                const sinkExists = sinksOutput.includes(sinkName);
+                // Check if the source exists
+                const sourceExists = sourcesOutput.includes(sourceName);
                 
                 if (!sinkExists || !sourceExists) {
                     // Orphaned module - unload it
-                    log(`Cleaning up orphaned hearback module ${moduleId}`);
+                    log(`Cleaning up orphaned hearback module ${moduleId} (sink exists: ${sinkExists}, source exists: ${sourceExists})`);
                     try {
                         GLib.spawn_command_line_sync(`pactl unload-module ${moduleId}`);
                     } catch (e) {

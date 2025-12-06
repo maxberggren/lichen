@@ -584,7 +584,7 @@ class MainWindow extends Adw.ApplicationWindow {
         hearbackHeaderBox.append(hearbackInfoBox);
 
         this._hearbackValueLabel = new Gtk.Label({
-            label: '0%',
+            label: '70%',
             css_classes: ['hearback-value'],
             halign: Gtk.Align.END,
             valign: Gtk.Align.CENTER,
@@ -601,7 +601,7 @@ class MainWindow extends Adw.ApplicationWindow {
             hexpand: true,
         });
         this._hearbackSlider.set_range(0, 100);
-        this._hearbackSlider.set_value(0);
+        this._hearbackSlider.set_value(70);
         this._hearbackSlider.set_increments(5, 10);
         this._hearbackSlider.connect('value-changed', () => {
             this._onHearbackVolumeChanged(this._hearbackSlider.get_value());
@@ -968,7 +968,16 @@ class MainWindow extends Adw.ApplicationWindow {
 
         // Show/hide hearback option based on whether we have both input and output routes
         const canHearback = this._audioManager.canEnableHearback;
+        const wasVisible = this._hearbackRow.get_visible();
         this._hearbackRow.set_visible(canHearback);
+
+        // Auto-enable hearback at default volume when it first becomes available
+        if (canHearback && !wasVisible && !this._audioManager.hearbackEnabled) {
+            const defaultVolume = this._audioManager.hearbackVolume;
+            if (defaultVolume > 0) {
+                this._audioManager.setHearbackVolume(defaultVolume);
+            }
+        }
 
         // Update hearback slider and label
         const volume = this._audioManager.hearbackVolume;
@@ -976,7 +985,7 @@ class MainWindow extends Adw.ApplicationWindow {
         this._hearbackValueLabel.set_label(`${Math.round(volume)}%`);
 
         // Update hearback row styling
-        if (volume > 0) {
+        if (this._audioManager.hearbackEnabled) {
             this._hearbackRow.add_css_class('enabled');
         } else {
             this._hearbackRow.remove_css_class('enabled');
