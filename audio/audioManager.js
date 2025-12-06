@@ -11,10 +11,12 @@ var AudioManager = class AudioManager {
         this._listeners = [];
         this._createdRoutes = [];  // Track routes we've created { id, name, type, description, moduleIds }
         this._hearbackModuleId = null;  // Track hearback loopback module
-        this._hearbackEnabled = false;
+        this._hearbackVolume = 0;  // 0-100 percent
+        this._hearbackSinkInputIndex = null;  // Track the sink-input index for volume control
         
         this.refresh();
         this._detectExistingRoutes();
+        this._cleanupOrphanedHearbackModules();
     }
 
     addListener(callback) {
@@ -32,6 +34,7 @@ var AudioManager = class AudioManager {
     refresh() {
         this._fetchSinks();
         this._fetchSources();
+        this._cleanupOrphanedHearbackModules();
         this._notifyListeners();
     }
 
@@ -180,6 +183,48 @@ var AudioManager = class AudioManager {
         }
 
         this._notifyListeners();
+    }
+
+    // Clean up orphaned hearback loopback modules (from previous sessions)
+    _cleanupOrphanedHearbackModules() {
+        const modulesOutput = this._runPactl('list modules short');
+        const lines = modulesOutput.split('\n');
+        
+        for (const line of lines) {
+            if (!line.includes('module-loopback')) continue;
+            if (!line.includes('lichen_input_') || !line.includes('lichen_output_')) continue;
+            
+            // This is a hearback loopback - check if the source/sink still exist
+            const parts = line.split('\t');
+            if (parts.length < 3) continue;
+            
+            const moduleId = parts[0];
+            const args = parts[2] || '';
+            
+            // Extract source and sink from args
+            const sourceMatch = args.match(/source=([^\s]+)/);
+            const sinkMatch = args.match(/sink=([^\s]+)/);
+            
+            if (sourceMatch && sinkMatch) {
+                const sourceName = sourceMatch[1];
+                const sinkName = sinkMatch[1];
+                
+                // Check if the sink exists
+                const sinkExists = this._sinks.some(s => s.name === sinkName);
+                // Check if the source exists (need to check raw sources including monitors)
+                const sourceExists = this._runPactl('list sources short').includes(sourceName);
+                
+                if (!sinkExists || !sourceExists) {
+                    // Orphaned module - unload it
+                    log(`Cleaning up orphaned hearback module ${moduleId}`);
+                    try {
+                        GLib.spawn_command_line_sync(`pactl unload-module ${moduleId}`);
+                    } catch (e) {
+                        // Ignore errors
+                    }
+                }
+            }
+        }
     }
 
     // Parse pactl list modules to map sink names to module IDs
@@ -518,13 +563,92 @@ var AudioManager = class AudioManager {
         return false;
     }
 
-    // Get hearback state
+    // Get hearback volume (0-100)
+    get hearbackVolume() {
+        return this._hearbackVolume;
+    }
+
+    // Get hearback enabled state (volume > 0)
     get hearbackEnabled() {
-        return this._hearbackEnabled;
+        return this._hearbackVolume > 0 && this._hearbackModuleId !== null;
+    }
+
+    // Set hearback volume (0-100)
+    // Creates the loopback if needed, adjusts volume, or removes if 0
+    setHearbackVolume(volume) {
+        volume = Math.max(0, Math.min(100, volume));
+        this._hearbackVolume = volume;
+
+        if (volume === 0) {
+            // Disable hearback
+            this._disableHearback();
+            return true;
+        }
+
+        // Enable hearback if not already enabled
+        if (!this._hearbackModuleId) {
+            if (!this._enableHearback()) {
+                return false;
+            }
+        }
+
+        // Set the volume on the loopback's sink-input
+        this._setHearbackSinkInputVolume(volume);
+        return true;
+    }
+
+    // Find and store the sink-input index for the hearback loopback
+    _findHearbackSinkInput() {
+        if (!this._hearbackModuleId) return null;
+
+        // List sink-inputs and find the one from our loopback module
+        const output = this._runPactl('list sink-inputs');
+        const blocks = output.split(/\n(?=Sink Input #\d+)/);
+
+        for (const block of blocks) {
+            if (!block.trim()) continue;
+
+            const idMatch = block.match(/^Sink Input #(\d+)/);
+            // The property is pulse.module.id in PipeWire
+            const moduleMatch = block.match(/pulse\.module\.id = "(\d+)"/);
+
+            if (idMatch && moduleMatch) {
+                const moduleId = parseInt(moduleMatch[1]);
+                if (moduleId === this._hearbackModuleId) {
+                    return parseInt(idMatch[1]);
+                }
+            }
+        }
+        return null;
+    }
+
+    // Set the volume on the hearback sink-input
+    _setHearbackSinkInputVolume(volumePercent) {
+        // Find the sink-input if we don't have it yet
+        if (!this._hearbackSinkInputIndex) {
+            this._hearbackSinkInputIndex = this._findHearbackSinkInput();
+        }
+
+        if (!this._hearbackSinkInputIndex) {
+            log('Could not find hearback sink-input');
+            return false;
+        }
+
+        // Convert percentage to PulseAudio volume (65536 = 100%)
+        const paVolume = Math.round((volumePercent / 100) * 65536);
+        const cmd = `pactl set-sink-input-volume ${this._hearbackSinkInputIndex} ${paVolume}`;
+
+        try {
+            GLib.spawn_command_line_sync(cmd);
+            return true;
+        } catch (e) {
+            logError(e, 'Failed to set hearback volume');
+        }
+        return false;
     }
 
     // Enable hearback - route mixed input to output so you can hear yourself
-    enableHearback() {
+    _enableHearback() {
         // Find the active mixed input route
         const inputRoute = this._createdRoutes.find(r => r.type === 'input');
         if (!inputRoute) {
@@ -552,7 +676,7 @@ var AudioManager = class AudioManager {
                 const moduleId = new TextDecoder().decode(stdout).trim();
                 if (moduleId) {
                     this._hearbackModuleId = parseInt(moduleId);
-                    this._hearbackEnabled = true;
+                    this._hearbackSinkInputIndex = null;  // Will be found on first volume set
                     this._notifyListeners();
                     return true;
                 }
@@ -564,7 +688,7 @@ var AudioManager = class AudioManager {
     }
 
     // Disable hearback
-    disableHearback() {
+    _disableHearback() {
         if (this._hearbackModuleId) {
             try {
                 GLib.spawn_command_line_sync(`pactl unload-module ${this._hearbackModuleId}`);
@@ -572,19 +696,16 @@ var AudioManager = class AudioManager {
                 // Module may already be unloaded
             }
             this._hearbackModuleId = null;
+            this._hearbackSinkInputIndex = null;
         }
-        this._hearbackEnabled = false;
         this._notifyListeners();
         return true;
     }
 
-    // Toggle hearback
-    setHearback(enabled) {
-        if (enabled) {
-            return this.enableHearback();
-        } else {
-            return this.disableHearback();
-        }
+    // Disable hearback (public method for cleanup)
+    disableHearback() {
+        this._hearbackVolume = 0;
+        return this._disableHearback();
     }
 
     // Check if hearback can be enabled (requires both input and output routes)

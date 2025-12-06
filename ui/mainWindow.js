@@ -342,6 +342,17 @@ class MainWindow extends Adw.ApplicationWindow {
                 color: #6e7681;
                 margin-top: 2px;
             }
+            
+            .hearback-slider {
+                margin-top: 8px;
+            }
+            
+            .hearback-value {
+                font-family: 'JetBrains Mono', monospace;
+                font-size: 11px;
+                color: #8b949e;
+                min-width: 36px;
+            }
         `;
 
         const provider = new Gtk.CssProvider();
@@ -541,10 +552,14 @@ class MainWindow extends Adw.ApplicationWindow {
 
         // Hearback option
         this._hearbackRow = new Gtk.Box({
-            orientation: Gtk.Orientation.HORIZONTAL,
+            orientation: Gtk.Orientation.VERTICAL,
             css_classes: ['hearback-row'],
             margin_top: 12,
             visible: false,
+        });
+
+        const hearbackHeaderBox = new Gtk.Box({
+            orientation: Gtk.Orientation.HORIZONTAL,
         });
 
         const hearbackInfoBox = new Gtk.Box({
@@ -566,16 +581,32 @@ class MainWindow extends Adw.ApplicationWindow {
         });
         hearbackInfoBox.append(hearbackDesc);
 
-        this._hearbackRow.append(hearbackInfoBox);
+        hearbackHeaderBox.append(hearbackInfoBox);
 
-        this._hearbackSwitch = new Gtk.Switch({
+        this._hearbackValueLabel = new Gtk.Label({
+            label: '0%',
+            css_classes: ['hearback-value'],
+            halign: Gtk.Align.END,
             valign: Gtk.Align.CENTER,
         });
-        this._hearbackSwitch.connect('state-set', (widget, state) => {
-            this._onHearbackToggled(state);
-            return false;
+        hearbackHeaderBox.append(this._hearbackValueLabel);
+
+        this._hearbackRow.append(hearbackHeaderBox);
+
+        // Slider for hearback volume (0-100%)
+        this._hearbackSlider = new Gtk.Scale({
+            orientation: Gtk.Orientation.HORIZONTAL,
+            css_classes: ['hearback-slider'],
+            draw_value: false,
+            hexpand: true,
         });
-        this._hearbackRow.append(this._hearbackSwitch);
+        this._hearbackSlider.set_range(0, 100);
+        this._hearbackSlider.set_value(0);
+        this._hearbackSlider.set_increments(5, 10);
+        this._hearbackSlider.connect('value-changed', () => {
+            this._onHearbackVolumeChanged(this._hearbackSlider.get_value());
+        });
+        this._hearbackRow.append(this._hearbackSlider);
 
         panel.append(this._hearbackRow);
 
@@ -939,24 +970,29 @@ class MainWindow extends Adw.ApplicationWindow {
         const canHearback = this._audioManager.canEnableHearback;
         this._hearbackRow.set_visible(canHearback);
 
-        // Update hearback switch state (without triggering signal)
-        this._hearbackSwitch.set_active(this._audioManager.hearbackEnabled);
+        // Update hearback slider and label
+        const volume = this._audioManager.hearbackVolume;
+        this._hearbackSlider.set_value(volume);
+        this._hearbackValueLabel.set_label(`${Math.round(volume)}%`);
 
         // Update hearback row styling
-        if (this._audioManager.hearbackEnabled) {
+        if (volume > 0) {
             this._hearbackRow.add_css_class('enabled');
         } else {
             this._hearbackRow.remove_css_class('enabled');
         }
     }
 
-    _onHearbackToggled(enabled) {
-        const success = this._audioManager.setHearback(enabled);
-        if (!success && enabled) {
-            // Failed to enable, reset switch
-            this._hearbackSwitch.set_active(false);
+    _onHearbackVolumeChanged(volume) {
+        this._audioManager.setHearbackVolume(volume);
+        this._hearbackValueLabel.set_label(`${Math.round(volume)}%`);
+        
+        // Update row styling
+        if (volume > 0) {
+            this._hearbackRow.add_css_class('enabled');
+        } else {
+            this._hearbackRow.remove_css_class('enabled');
         }
-        this._updateStatus();
     }
 
     _updateRoutesList() {
