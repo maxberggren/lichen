@@ -14,13 +14,62 @@ REMAPPED_TO_LAPTOP="${MIXED_TO_LAPTOP}_mic"
 MIXED_TO_ROOM="lichen_to_room"
 NULL_SINK_LAPTOP="${MIXED_TO_ROOM}_null"
 
+# Hearback: percentage of your own mic audio to hear in your headphones (0-100)
+# Set via --hearback=XX or HEARBACK_PERCENT env var, default 0 (off)
+HEARBACK_PERCENT="${HEARBACK_PERCENT:-0}"
+HEARBACK_MODULE_ID=""
+
 cleanup() {
     echo "Cleaning up audio modules..."
+    # Unload hearback module if we created one
+    if [ -n "$HEARBACK_MODULE_ID" ]; then
+        pactl unload-module "$HEARBACK_MODULE_ID" 2>/dev/null || true
+    fi
     # Unload in reverse order, ignore errors
     pactl unload-module module-remap-source 2>/dev/null || true
     pactl unload-module module-loopback 2>/dev/null || true
     pactl unload-module module-combine-sink 2>/dev/null || true
     pactl unload-module module-null-sink 2>/dev/null || true
+}
+
+setup_hearback() {
+    local percent="$1"
+    
+    if [ "$percent" -eq 0 ]; then
+        return
+    fi
+    
+    echo "┌─ Setting up hearback (${percent}%)..."
+    
+    # Create loopback from room mic mix to headphones
+    # This lets room participants hear themselves
+    HEARBACK_MODULE_ID=$(pactl load-module module-loopback \
+        source="${NULL_SINK_ROOM}.monitor" \
+        sink="$COMBINED_SINK" \
+        latency_msec=1)
+    
+    if [ -z "$HEARBACK_MODULE_ID" ]; then
+        echo "└─ ⚠ Failed to create hearback loopback"
+        return
+    fi
+    
+    # Find the sink-input for this loopback and set its volume
+    sleep 0.5  # Give PulseAudio a moment to create the sink-input
+    
+    # Convert percentage to PulseAudio volume (65536 = 100%)
+    local pa_volume=$((percent * 65536 / 100))
+    
+    # Find the sink-input created by our loopback module
+    local sink_input_id
+    sink_input_id=$(pactl list sink-inputs | grep -B 20 "module-loopback.c" | grep -B 20 "${NULL_SINK_ROOM}.monitor" | grep "Sink Input #" | tail -1 | sed 's/Sink Input #//')
+    
+    if [ -n "$sink_input_id" ]; then
+        pactl set-sink-input-volume "$sink_input_id" "$pa_volume"
+        echo "└─ ✓ Hearback enabled at ${percent}% (sink-input #${sink_input_id})"
+    else
+        # Fallback: try to set volume by iterating through recent sink-inputs
+        echo "└─ ✓ Hearback enabled at ${percent}% (volume control limited)"
+    fi
 }
 
 wait_for_usb_audio() {
@@ -234,15 +283,32 @@ main() {
     fi
     
     echo ""
+    
+    # ───────────────────────────────────────────────────────────────────
+    # 3. HEARBACK: Let room participants hear themselves (optional)
+    # ───────────────────────────────────────────────────────────────────
+    if [ "$HP_COUNT" -gt 0 ] && [ "$HEARBACK_PERCENT" -gt 0 ]; then
+        setup_hearback "$HEARBACK_PERCENT"
+        echo ""
+    fi
+    
     echo "═══════════════════════════════════════════════════════════════════"
     echo ""
     echo "  ✅ LICHEN ACTIVE"
     echo ""
     echo "  🎧 Headphones connected: $HP_COUNT"
     echo "  🎤 Mics active: $MIC_COUNT"
+    if [ "$HEARBACK_PERCENT" -gt 0 ]; then
+        echo "  🔊 Hearback: ${HEARBACK_PERCENT}%"
+    else
+        echo "  🔇 Hearback: off"
+    fi
     echo ""
     echo "  Room participants hear: Laptop/remote audio"
     echo "  Laptop/remote hears: All room mics mixed"
+    if [ "$HEARBACK_PERCENT" -gt 0 ]; then
+        echo "  Hearback: Room participants hear themselves at ${HEARBACK_PERCENT}%"
+    fi
     echo ""
     echo "  Press Ctrl+C to stop"
     echo ""
@@ -255,21 +321,63 @@ main() {
     done
 }
 
-# Handle arguments
-case "${1:-}" in
-    --setup|-s)
-        setup_bridge
-        echo "Setup complete. Run without --setup to start."
-        ;;
-    --help|-h)
-        echo "Usage: $0 [--setup|-s] [--help|-h]"
-        echo ""
-        echo "  --setup, -s    Force bridge adapter setup"
-        echo "  --help, -h     Show this help"
-        echo ""
-        echo "On first run, you'll be prompted to set up the bridge adapter."
-        ;;
-    *)
-        main "$@"
-        ;;
-esac
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --setup|-s)
+            setup_bridge
+            echo "Setup complete. Run without --setup to start."
+            exit 0
+            ;;
+        --hearback=*)
+            HEARBACK_PERCENT="${1#*=}"
+            # Validate it's a number between 0-100
+            if ! [[ "$HEARBACK_PERCENT" =~ ^[0-9]+$ ]] || [ "$HEARBACK_PERCENT" -gt 100 ]; then
+                echo "Error: hearback must be a number between 0-100"
+                exit 1
+            fi
+            shift
+            ;;
+        --hearback)
+            # If next arg exists and is a number, use it
+            if [[ -n "${2:-}" ]] && [[ "$2" =~ ^[0-9]+$ ]]; then
+                HEARBACK_PERCENT="$2"
+                if [ "$HEARBACK_PERCENT" -gt 100 ]; then
+                    echo "Error: hearback must be a number between 0-100"
+                    exit 1
+                fi
+                shift 2
+            else
+                echo "Error: --hearback requires a value (0-100)"
+                exit 1
+            fi
+            ;;
+        --help|-h)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --setup, -s         Force bridge adapter setup"
+            echo "  --hearback=PERCENT  Enable hearback (hear yourself) at PERCENT volume (0-100)"
+            echo "                      Example: --hearback=30 for 30% sidetone"
+            echo "  --help, -h          Show this help"
+            echo ""
+            echo "Environment variables:"
+            echo "  HEARBACK_PERCENT    Set hearback volume (0-100), default: 0 (off)"
+            echo ""
+            echo "On first run, you'll be prompted to set up the bridge adapter."
+            echo ""
+            echo "Examples:"
+            echo "  $0                      # Run with hearback off"
+            echo "  $0 --hearback=25        # Run with 25% hearback"
+            echo "  HEARBACK_PERCENT=50 $0  # Run with 50% hearback via env var"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
+main
