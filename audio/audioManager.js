@@ -13,10 +13,82 @@ var AudioManager = class AudioManager {
         this._hearbackModuleId = null;  // Track hearback loopback module
         this._hearbackVolume = 70;  // 0-100 percent, default to 70%
         this._hearbackSinkInputIndex = null;  // Track the sink-input index for volume control
+        this._deviceVolumes = {};  // Track per-device volume levels { sinkName: volumePercent }
+        this._configPath = GLib.build_filenamev([GLib.get_user_config_dir(), 'lichen', 'settings.json']);
         
+        this._loadSettings();
         this.refresh();
         this._detectExistingRoutes();
         this._cleanupOrphanedHearbackModules();
+        this._restoreSettings();
+    }
+
+    // Load settings from config file
+    _loadSettings() {
+        try {
+            const configDir = GLib.path_get_dirname(this._configPath);
+            // Ensure config directory exists
+            GLib.mkdir_with_parents(configDir, 0o755);
+            
+            if (GLib.file_test(this._configPath, GLib.FileTest.EXISTS)) {
+                const [ok, contents] = GLib.file_get_contents(this._configPath);
+                if (ok) {
+                    const json = new TextDecoder().decode(contents);
+                    const settings = JSON.parse(json);
+                    
+                    if (settings.deviceVolumes) {
+                        this._deviceVolumes = settings.deviceVolumes;
+                    }
+                    if (typeof settings.hearbackVolume === 'number') {
+                        this._hearbackVolume = settings.hearbackVolume;
+                    }
+                }
+            }
+        } catch (e) {
+            log(`Failed to load settings: ${e.message}`);
+        }
+    }
+
+    // Save settings to config file
+    _saveSettings() {
+        try {
+            const configDir = GLib.path_get_dirname(this._configPath);
+            GLib.mkdir_with_parents(configDir, 0o755);
+            
+            const settings = {
+                deviceVolumes: this._deviceVolumes,
+                hearbackVolume: this._hearbackVolume,
+            };
+            
+            const json = JSON.stringify(settings, null, 2);
+            GLib.file_set_contents(this._configPath, json);
+        } catch (e) {
+            log(`Failed to save settings: ${e.message}`);
+        }
+    }
+
+    // Restore volume settings after routes are detected
+    _restoreSettings() {
+        // Apply saved device volumes to any existing sinks
+        for (const [deviceName, volume] of Object.entries(this._deviceVolumes)) {
+            // Check if it's a sink
+            const sinkExists = this._sinks.some(s => s.name === deviceName);
+            if (sinkExists) {
+                this.setDeviceVolume(deviceName, volume);
+                continue;
+            }
+            
+            // Check if it's a source
+            const sourceExists = this._sources.some(s => s.name === deviceName);
+            if (sourceExists) {
+                this.setSourceVolume(deviceName, volume);
+            }
+        }
+        
+        // Restore hearback if we have routes that support it
+        if (this._hearbackVolume > 0 && this.canEnableHearback) {
+            this.setHearbackVolume(this._hearbackVolume);
+        }
     }
 
     addListener(callback) {
@@ -587,6 +659,7 @@ var AudioManager = class AudioManager {
     setHearbackVolume(volume) {
         volume = Math.max(0, Math.min(100, volume));
         this._hearbackVolume = volume;
+        this._saveSettings();
 
         if (volume === 0) {
             // Disable hearback
@@ -714,6 +787,7 @@ var AudioManager = class AudioManager {
     // Disable hearback (public method for cleanup)
     disableHearback() {
         this._hearbackVolume = 0;
+        this._saveSettings();
         return this._disableHearback();
     }
 
@@ -722,5 +796,161 @@ var AudioManager = class AudioManager {
         const hasInput = this._createdRoutes.some(r => r.type === 'input');
         const hasOutput = this._createdRoutes.some(r => r.type === 'output');
         return hasInput && hasOutput;
+    }
+
+    // Get the volume for a specific output device (0-100)
+    getDeviceVolume(sinkName) {
+        if (this._deviceVolumes.hasOwnProperty(sinkName)) {
+            return this._deviceVolumes[sinkName];
+        }
+        return 100;  // Default to full volume
+    }
+
+    // Set volume for a specific output device (0-100)
+    setDeviceVolume(sinkName, volumePercent) {
+        volumePercent = Math.max(0, Math.min(100, volumePercent));
+        this._deviceVolumes[sinkName] = volumePercent;
+
+        // Convert percentage to PulseAudio volume (65536 = 100%)
+        const paVolume = Math.round((volumePercent / 100) * 65536);
+        const cmd = `pactl set-sink-volume ${sinkName} ${paVolume}`;
+
+        try {
+            GLib.spawn_command_line_sync(cmd);
+            this._saveSettings();
+            return true;
+        } catch (e) {
+            logError(e, `Failed to set volume for ${sinkName}`);
+        }
+        return false;
+    }
+
+    // Get the slave sinks for an output route (returns array of sink names)
+    getRouteSlaveSinks(routeId) {
+        const route = this._createdRoutes.find(r => r.id === routeId);
+        if (!route || route.type !== 'output') return [];
+
+        // Parse the combine-sink module arguments to get slave sinks
+        const modulesOutput = this._runPactl('list modules');
+        const blocks = modulesOutput.split(/\n(?=Module #\d+)/);
+
+        for (const block of blocks) {
+            if (!block.trim()) continue;
+
+            const nameMatch = block.match(/\n\tName: (.+)/);
+            const argsMatch = block.match(/\n\tArgument: (.+)/);
+
+            if (nameMatch && nameMatch[1].trim() === 'module-combine-sink' && argsMatch) {
+                const args = argsMatch[1].trim();
+                const sinkNameMatch = args.match(/sink_name=(\S+)/);
+                const slavesMatch = args.match(/slaves=([^\s]+)/);
+
+                if (sinkNameMatch && sinkNameMatch[1] === route.sinkName && slavesMatch) {
+                    return slavesMatch[1].split(',');
+                }
+            }
+        }
+
+        return [];
+    }
+
+    // Get info about slave sinks with their current volumes
+    getRouteSlaveInfo(routeId) {
+        const slaveSinkNames = this.getRouteSlaveSinks(routeId);
+        const slaveInfo = [];
+
+        for (const sinkName of slaveSinkNames) {
+            const sink = this._sinks.find(s => s.name === sinkName);
+            const description = sink ? sink.description : sinkName;
+            const volume = this.getDeviceVolume(sinkName);
+
+            slaveInfo.push({
+                name: sinkName,
+                description: description,
+                volume: volume,
+            });
+        }
+
+        return slaveInfo;
+    }
+
+    // Get the volume for a specific input source (0-100)
+    getSourceVolume(sourceName) {
+        if (this._deviceVolumes.hasOwnProperty(sourceName)) {
+            return this._deviceVolumes[sourceName];
+        }
+        return 100;  // Default to full volume
+    }
+
+    // Set volume for a specific input source (0-100)
+    setSourceVolume(sourceName, volumePercent) {
+        volumePercent = Math.max(0, Math.min(100, volumePercent));
+        this._deviceVolumes[sourceName] = volumePercent;
+
+        // Convert percentage to PulseAudio volume (65536 = 100%)
+        const paVolume = Math.round((volumePercent / 100) * 65536);
+        const cmd = `pactl set-source-volume ${sourceName} ${paVolume}`;
+
+        try {
+            GLib.spawn_command_line_sync(cmd);
+            this._saveSettings();
+            return true;
+        } catch (e) {
+            logError(e, `Failed to set volume for source ${sourceName}`);
+        }
+        return false;
+    }
+
+    // Get the slave sources for an input route (returns array of source names)
+    getRouteSlaveSourcesFromModules(routeId) {
+        const route = this._createdRoutes.find(r => r.id === routeId);
+        if (!route || route.type !== 'input') return [];
+
+        const nullSinkName = `${route.sinkName}_null`;
+        const slaveSources = [];
+
+        // Parse the loopback modules to find which sources feed into the null sink
+        const modulesOutput = this._runPactl('list modules');
+        const blocks = modulesOutput.split(/\n(?=Module #\d+)/);
+
+        for (const block of blocks) {
+            if (!block.trim()) continue;
+
+            const nameMatch = block.match(/\n\tName: (.+)/);
+            const argsMatch = block.match(/\n\tArgument: (.+)/);
+
+            if (nameMatch && nameMatch[1].trim() === 'module-loopback' && argsMatch) {
+                const args = argsMatch[1].trim();
+                const sinkMatch = args.match(/sink=(\S+)/);
+                const sourceMatch = args.match(/source=(\S+)/);
+
+                // Check if this loopback feeds into our null sink
+                if (sinkMatch && sinkMatch[1] === nullSinkName && sourceMatch) {
+                    slaveSources.push(sourceMatch[1]);
+                }
+            }
+        }
+
+        return slaveSources;
+    }
+
+    // Get info about slave sources with their current volumes
+    getRouteSlaveSourceInfo(routeId) {
+        const slaveSourceNames = this.getRouteSlaveSourcesFromModules(routeId);
+        const slaveInfo = [];
+
+        for (const sourceName of slaveSourceNames) {
+            const source = this._sources.find(s => s.name === sourceName);
+            const description = source ? source.description : sourceName;
+            const volume = this.getSourceVolume(sourceName);
+
+            slaveInfo.push({
+                name: sourceName,
+                description: description,
+                volume: volume,
+            });
+        }
+
+        return slaveInfo;
     }
 };

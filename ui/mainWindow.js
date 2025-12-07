@@ -247,28 +247,6 @@ class MainWindow extends Adw.ApplicationWindow {
                 margin-left: 6px;
             }
             
-            .route-item {
-                background: rgba(13, 17, 23, 0.9);
-                border-radius: 8px;
-                border: 1px solid rgba(48, 54, 61, 0.6);
-                padding: 12px 16px;
-                margin: 4px 0;
-                transition: all 200ms ease;
-            }
-            
-            .route-item:hover {
-                border-color: rgba(88, 166, 255, 0.4);
-                background: rgba(22, 27, 34, 0.95);
-            }
-            
-            .route-item.output {
-                border-color: rgba(88, 166, 255, 0.4);
-            }
-            
-            .route-item.input {
-                border-color: rgba(88, 166, 255, 0.4);
-            }
-            
             .route-name {
                 font-family: 'Inter', 'SF Pro Display', sans-serif;
                 font-size: 13px;
@@ -303,6 +281,51 @@ class MainWindow extends Adw.ApplicationWindow {
             
             .route-delete:hover {
                 color: #f85149;
+            }
+            
+            .route-card {
+                background: rgba(13, 17, 23, 0.9);
+                border-radius: 8px;
+                border: 1px solid rgba(48, 54, 61, 0.6);
+                padding: 12px 16px;
+                margin: 4px 0;
+                transition: all 200ms ease;
+            }
+            
+            .route-card:hover {
+                border-color: rgba(88, 166, 255, 0.4);
+                background: rgba(22, 27, 34, 0.95);
+            }
+            
+            .route-card.output {
+                border-color: rgba(88, 166, 255, 0.4);
+            }
+            
+            .route-card.input {
+                border-color: rgba(88, 166, 255, 0.4);
+            }
+            
+            .device-volume-row {
+                padding: 6px 0 0 0;
+                margin-top: 6px;
+                border-top: 1px solid rgba(48, 54, 61, 0.4);
+            }
+            
+            .device-volume-label {
+                font-family: 'Inter', sans-serif;
+                font-size: 11px;
+                color: #8b949e;
+            }
+            
+            .device-volume-value {
+                font-family: 'JetBrains Mono', monospace;
+                font-size: 10px;
+                color: #6e7681;
+                min-width: 36px;
+            }
+            
+            .device-volume-slider {
+                margin-top: 2px;
             }
             
             .clear-btn {
@@ -1017,9 +1040,14 @@ class MainWindow extends Adw.ApplicationWindow {
         this._routesSectionLabel.set_visible(routes.length > 0);
 
         for (const route of routes) {
-            const item = new Gtk.Box({
+            // Card container for route + volume controls
+            const card = new Gtk.Box({
+                orientation: Gtk.Orientation.VERTICAL,
+                css_classes: ['route-card', route.type],
+            });
+
+            const headerRow = new Gtk.Box({
                 orientation: Gtk.Orientation.HORIZONTAL,
-                css_classes: ['route-item', route.type],
             });
 
             // Icon
@@ -1027,7 +1055,7 @@ class MainWindow extends Adw.ApplicationWindow {
                 icon_name: route.type === 'output' ? 'audio-headphones-symbolic' : 'audio-input-microphone-symbolic',
                 css_classes: ['route-icon', route.type],
             });
-            item.append(icon);
+            headerRow.append(icon);
 
             const infoBox = new Gtk.Box({
                 orientation: Gtk.Orientation.VERTICAL,
@@ -1039,7 +1067,7 @@ class MainWindow extends Adw.ApplicationWindow {
                 css_classes: ['route-name'],
                 halign: Gtk.Align.START,
                 ellipsize: 3,
-                max_width_chars: 20,
+                max_width_chars: 30,
             });
             infoBox.append(nameLabel);
 
@@ -1050,7 +1078,7 @@ class MainWindow extends Adw.ApplicationWindow {
                     css_classes: ['route-type'],
                     halign: Gtk.Align.START,
                     ellipsize: 3,
-                    max_width_chars: 25,
+                    max_width_chars: 35,
                     wrap: true,
                 });
                 infoBox.append(devicesLabel);
@@ -1063,7 +1091,7 @@ class MainWindow extends Adw.ApplicationWindow {
                 infoBox.append(typeLabel);
             }
 
-            item.append(infoBox);
+            headerRow.append(infoBox);
 
             const deleteBtn = new Gtk.Button({
                 icon_name: 'user-trash-symbolic',
@@ -1077,10 +1105,83 @@ class MainWindow extends Adw.ApplicationWindow {
                 this._updateStatus();
                 this._refreshDevices();
             });
-            item.append(deleteBtn);
+            headerRow.append(deleteBtn);
 
-            this._routesListBox.append(item);
+            card.append(headerRow);
+
+            // Add per-device volume controls for output routes
+            if (route.type === 'output') {
+                const slaveInfo = this._audioManager.getRouteSlaveInfo(route.id);
+                for (const slave of slaveInfo) {
+                    const volumeRow = this._createDeviceVolumeRow(slave, 'output');
+                    card.append(volumeRow);
+                }
+            }
+
+            // Add per-source volume controls for input routes
+            if (route.type === 'input') {
+                const slaveInfo = this._audioManager.getRouteSlaveSourceInfo(route.id);
+                for (const slave of slaveInfo) {
+                    const volumeRow = this._createDeviceVolumeRow(slave, 'input');
+                    card.append(volumeRow);
+                }
+            }
+
+            this._routesListBox.append(card);
         }
+    }
+
+    _createDeviceVolumeRow(slave, type) {
+        const row = new Gtk.Box({
+            orientation: Gtk.Orientation.VERTICAL,
+            css_classes: ['device-volume-row'],
+        });
+
+        const headerBox = new Gtk.Box({
+            orientation: Gtk.Orientation.HORIZONTAL,
+        });
+
+        const label = new Gtk.Label({
+            label: slave.description,
+            css_classes: ['device-volume-label'],
+            halign: Gtk.Align.START,
+            hexpand: true,
+            ellipsize: 3,
+            max_width_chars: 30,
+        });
+        headerBox.append(label);
+
+        const valueLabel = new Gtk.Label({
+            label: `${Math.round(slave.volume)}%`,
+            css_classes: ['device-volume-value'],
+            halign: Gtk.Align.END,
+        });
+        headerBox.append(valueLabel);
+
+        row.append(headerBox);
+
+        const slider = new Gtk.Scale({
+            orientation: Gtk.Orientation.HORIZONTAL,
+            css_classes: ['device-volume-slider'],
+            draw_value: false,
+            hexpand: true,
+        });
+        slider.set_range(0, 100);
+        slider.set_value(slave.volume);
+        slider.set_increments(5, 10);
+        slider.connect('value-changed', () => {
+            const volume = slider.get_value();
+            if (type === 'output') {
+                this._audioManager.setDeviceVolume(slave.name, volume);
+            } else {
+                this._audioManager.setSourceVolume(slave.name, volume);
+            }
+            valueLabel.set_label(`${Math.round(volume)}%`);
+        });
+
+        row.append(slider);
+
+        return row;
     }
 
     _resetToDefaults() {
