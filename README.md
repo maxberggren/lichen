@@ -80,3 +80,5 @@ Lichen uses PulseAudio/PipeWire modules to create virtual audio devices:
 MIT
 
 
+
+
