@@ -1,6 +1,7 @@
 #!/bin/bash
 # lichen-headless.sh - Auto-merge all USB mics and route to all USB headphones
 # Bridge adapter (to laptop) is detected on first run or when config is missing
+# NOW WITH HOT-PLUG SUPPORT: Automatically detects new devices!
 
 set -e
 
@@ -18,6 +19,10 @@ NULL_SINK_LAPTOP="${MIXED_TO_ROOM}_null"
 # Set via --hearback=XX or HEARBACK_PERCENT env var, default 0 (off)
 HEARBACK_PERCENT="${HEARBACK_PERCENT:-0}"
 HEARBACK_MODULE_ID=""
+
+# Track current device state
+CURRENT_DEVICE_STATE=""
+POLL_INTERVAL=2  # Check for device changes every N seconds
 
 cleanup() {
     echo "Cleaning up audio modules..."
@@ -46,7 +51,8 @@ setup_hearback() {
     HEARBACK_MODULE_ID=$(pactl load-module module-loopback \
         source="${NULL_SINK_ROOM}.monitor" \
         sink="$COMBINED_SINK" \
-        latency_msec=1)
+        latency_msec=1 \
+        adjust_time=0)
     
     if [ -z "$HEARBACK_MODULE_ID" ]; then
         echo "└─ ⚠ Failed to create hearback loopback"
@@ -72,15 +78,65 @@ setup_hearback() {
     fi
 }
 
+enable_usb_duplex_profiles() {
+    # Set USB audio cards to duplex mode (input+output) instead of output-only
+    # This is needed because PulseAudio often defaults to output-only profiles
+    for card in $(pactl list cards short 2>/dev/null | grep -i usb | awk '{print $2}'); do
+        # Try the analog stereo + mono input profile first (most common)
+        if pactl set-card-profile "$card" "output:analog-stereo+input:mono-fallback" 2>/dev/null; then
+            echo "  Set duplex profile on: $(echo $card | cut -c1-50)..."
+        fi
+    done
+    
+    # If PulseAudio still doesn't show USB sources, manually load ALSA sources
+    # This handles devices where PulseAudio's profile detection fails
+    if ! pactl list sources short 2>/dev/null | grep -i usb | grep -qv '\.monitor'; then
+        # Find USB ALSA cards and load sources manually
+        for card_num in $(cat /proc/asound/cards 2>/dev/null | grep -i usb | awk '{print $1}'); do
+            # Check if this card has capture capability
+            if [ -f "/proc/asound/card${card_num}/stream0" ] && grep -q "Capture:" "/proc/asound/card${card_num}/stream0" 2>/dev/null; then
+                local source_name="alsa_input_manual_card${card_num}"
+                # Only load if not already loaded
+                if ! pactl list sources short 2>/dev/null | grep -q "$source_name"; then
+                    if pactl load-module module-alsa-source device="hw:${card_num},0" source_name="$source_name" 2>/dev/null; then
+                        echo "  Manually loaded source for card ${card_num}"
+                    fi
+                fi
+            fi
+        done
+    fi
+}
+
 wait_for_usb_audio() {
-    echo "Waiting for USB audio device..."
-    while true; do
-        if pactl list sources short 2>/dev/null | grep -qi usb; then
+    local timeout="${1:-30}"  # Default 30 second timeout
+    local elapsed=0
+    echo "Waiting for USB audio device (timeout: ${timeout}s)..."
+    
+    while [ "$elapsed" -lt "$timeout" ]; do
+        # First, ensure USB cards are in duplex mode
+        enable_usb_duplex_profiles
+        
+        # Need BOTH a sink AND a non-monitor source to be ready
+        local has_sink=$(pactl list sinks short 2>/dev/null | grep -i usb)
+        local has_source=$(pactl list sources short 2>/dev/null | grep -i usb | grep -v '\.monitor')
+        
+        if [ -n "$has_sink" ] && [ -n "$has_source" ]; then
             sleep 1  # Give it a moment to fully initialize
             return 0
         fi
+        
         sleep 0.5
+        elapsed=$((elapsed + 1))
     done
+    
+    # Timeout - show what we do see
+    echo ""
+    echo "⚠ Timeout waiting for USB audio. Current state:"
+    echo "  Sinks (looking for 'usb'):"
+    pactl list sinks short 2>/dev/null | head -5 | sed 's/^/    /'
+    echo "  Sources (looking for 'usb', excluding monitors):"
+    pactl list sources short 2>/dev/null | grep -v '\.monitor' | head -5 | sed 's/^/    /'
+    return 1
 }
 
 setup_bridge() {
@@ -103,35 +159,52 @@ setup_bridge() {
     echo ""
     echo "Now plug in the BRIDGE adapter (the colored one for laptop)..."
     
-    wait_for_usb_audio
+    if ! wait_for_usb_audio 30; then
+        echo ""
+        echo "✗ Error: Could not detect USB audio device within timeout"
+        echo ""
+        echo "Troubleshooting tips:"
+        echo "  1. Make sure the USB adapter is firmly plugged in"
+        echo "  2. Try a different USB port"
+        echo "  3. Check 'dmesg | tail -20' for USB errors"
+        echo "  4. Run 'pactl list sinks short' to see available sinks"
+        exit 1
+    fi
     
-    # Grab the device info
+    # Grab the device info - use FULL sink/source names for exact matching
     BRIDGE_SINK=$(pactl list sinks short | grep -i usb | head -1 | awk '{print $2}')
     BRIDGE_SOURCE=$(pactl list sources short | grep -i usb | grep -v '\.monitor' | head -1 | awk '{print $2}')
     
     if [ -z "$BRIDGE_SINK" ] || [ -z "$BRIDGE_SOURCE" ]; then
-        echo "✗ Error: Could not detect USB audio device"
+        echo "✗ Error: USB device detected but couldn't identify sink/source"
+        echo ""
+        echo "Debug info:"
+        echo "  BRIDGE_SINK='$BRIDGE_SINK'"
+        echo "  BRIDGE_SOURCE='$BRIDGE_SOURCE'"
+        echo ""
+        echo "All sinks:"
+        pactl list sinks short | sed 's/^/  /'
+        echo ""
+        echo "All sources (non-monitor):"
+        pactl list sources short | grep -v '\.monitor' | sed 's/^/  /'
         exit 1
     fi
-    
-    # Get a unique identifier (card name from the sink name)
-    # Usually looks like: alsa_output.usb-C-Media_Electronics_Inc._USB_PnP_Sound_Device-00.analog-stereo
-    # We extract the middle part as identifier
-    BRIDGE_ID=$(echo "$BRIDGE_SINK" | sed 's/alsa_output\.usb-//' | sed 's/-[0-9]*\.analog.*//' | head -c 50)
     
     echo ""
     echo "✓ Detected bridge adapter:"
     echo "  Sink:   $BRIDGE_SINK"
-    echo "  Source: $BRIDGE_SOURCE"  
-    echo "  ID:     $BRIDGE_ID"
+    echo "  Source: $BRIDGE_SOURCE"
     echo ""
     
-    # Save config
+    # Save config with FULL sink/source names for exact matching
+    # This allows multiple identical devices (e.g., two Corsair headsets)
     cat > "$CONFIG_FILE" << EOF
 # Lichen bridge configuration
 # Generated: $(date)
 # This adapter connects to the laptop via male-to-male TRRS cable
-BRIDGE_ID="$BRIDGE_ID"
+# Using FULL device names for exact matching (supports multiple identical devices)
+BRIDGE_SINK="$BRIDGE_SINK"
+BRIDGE_SOURCE="$BRIDGE_SOURCE"
 EOF
     
     echo "✓ Configuration saved to $CONFIG_FILE"
@@ -144,7 +217,13 @@ EOF
 load_bridge_config() {
     if [ -f "$CONFIG_FILE" ]; then
         source "$CONFIG_FILE"
-        if [ -n "$BRIDGE_ID" ]; then
+        # Support both old (BRIDGE_ID) and new (BRIDGE_SINK/BRIDGE_SOURCE) config formats
+        if [ -n "$BRIDGE_SINK" ] && [ -n "$BRIDGE_SOURCE" ]; then
+            return 0
+        elif [ -n "$BRIDGE_ID" ]; then
+            # Legacy config - will work but may have issues with identical devices
+            BRIDGE_SINK=$(pactl list sinks short | grep -i usb | grep -i "$BRIDGE_ID" | awk '{print $2}' | head -1)
+            BRIDGE_SOURCE=$(pactl list sources short | grep -i usb | grep -v '\.monitor' | grep -i "$BRIDGE_ID" | awk '{print $2}' | head -1)
             return 0
         fi
     fi
@@ -152,109 +231,91 @@ load_bridge_config() {
 }
 
 get_bridge_sink() {
-    pactl list sinks short | grep -i usb | grep -i "$BRIDGE_ID" | awk '{print $2}' | head -1
+    # Return the exact bridge sink name from config
+    echo "$BRIDGE_SINK"
 }
 
 get_bridge_source() {
-    pactl list sources short | grep -i usb | grep -v '\.monitor' | grep -i "$BRIDGE_ID" | awk '{print $2}' | head -1
+    # Return the exact bridge source name from config
+    echo "$BRIDGE_SOURCE"
 }
 
 get_headphone_sinks() {
-    pactl list sinks short | grep -i usb | grep -vi "$BRIDGE_ID" | awk '{print $2}'
+    # Get all USB sinks EXCEPT the exact bridge sink
+    # This allows multiple identical devices (e.g., two Corsair headsets)
+    pactl list sinks short | grep -i usb | awk '{print $2}' | grep -v "^${BRIDGE_SINK}$"
 }
 
 get_headphone_sources() {
-    pactl list sources short | grep -i usb | grep -v '\.monitor' | grep -vi "$BRIDGE_ID" | awk '{print $2}'
+    # Get all USB sources (excluding monitors) EXCEPT the exact bridge source
+    # This allows multiple identical devices (e.g., two Corsair headsets)
+    pactl list sources short | grep -i usb | grep -v '\.monitor' | awk '{print $2}' | grep -v "^${BRIDGE_SOURCE}$"
 }
 
-main() {
-    echo "╔════════════════════════════════════════════════════════════════╗"
-    echo "║                    LICHEN HEADLESS                             ║"
-    echo "║              Multi-headphone audio merger                      ║"
-    echo "╚════════════════════════════════════════════════════════════════╝"
-    echo ""
-    
-    # Check for --setup flag or missing config
-    if [ "$1" = "--setup" ] || [ "$1" = "-s" ]; then
-        setup_bridge
-    elif ! load_bridge_config; then
-        echo "No bridge configuration found."
-        setup_bridge
+get_device_state() {
+    # Create a fingerprint of current USB audio devices
+    # This lets us detect when devices are added/removed
+    local bridge_present=""
+    if pactl list sinks short | grep -q "^[0-9]*[[:space:]]*${BRIDGE_SINK}[[:space:]]"; then
+        bridge_present="$BRIDGE_SINK"
     fi
+    local headphone_sinks=$(get_headphone_sinks | sort | tr '\n' ',')
+    local headphone_sources=$(get_headphone_sources | sort | tr '\n' ',')
+    echo "${bridge_present}|${headphone_sinks}|${headphone_sources}"
+}
+
+setup_audio_routing() {
+    local bridge_sink="$1"
+    local bridge_source="$2"
+    local headphone_sinks="$3"
+    local headphone_sources="$4"
     
-    # Load config
-    source "$CONFIG_FILE"
-    echo "Bridge ID: $BRIDGE_ID"
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════════"
+    echo "  🔄 Configuring audio routing..."
+    echo "═══════════════════════════════════════════════════════════════════"
     echo ""
     
-    cleanup
+    # Set bridge volumes to 100%
+    pactl set-sink-volume "$bridge_sink" 100% 2>/dev/null || true
+    pactl set-source-volume "$bridge_source" 100% 2>/dev/null || true
     
-    # Wait for bridge device
-    echo "Waiting for bridge adapter..."
-    while [ -z "$(get_bridge_sink)" ]; do
-        sleep 1
-    done
-    
-    BRIDGE_SINK=$(get_bridge_sink)
-    BRIDGE_SOURCE=$(get_bridge_source)
-    
-    echo "✓ Bridge adapter connected:"
-    echo "  Output (to laptop): $BRIDGE_SINK"
-    echo "  Input (from laptop): $BRIDGE_SOURCE"
-    echo ""
-    
-    # Wait a moment for other devices
-    echo "Waiting for headphone adapters..."
-    sleep 3
-    
-    HEADPHONE_SINKS=$(get_headphone_sinks | tr '\n' ' ')
-    HEADPHONE_SOURCES=$(get_headphone_sources)
-    
-    HP_COUNT=$(echo "$HEADPHONE_SINKS" | wc -w)
-    MIC_COUNT=$(echo "$HEADPHONE_SOURCES" | wc -l)
-    
-    echo "✓ Found $HP_COUNT headphone output(s): $HEADPHONE_SINKS"
-    echo "✓ Found $MIC_COUNT headphone mic(s)"
-    echo ""
-    
-    if [ "$HP_COUNT" -eq 0 ]; then
-        echo "⚠ Warning: No headphone adapters found (besides bridge)"
-        echo "  Continuing anyway - plug in headphones and restart"
-    fi
-    
-    # ═══════════════════════════════════════════════════════════════════
-    # AUDIO ROUTING SETUP
-    # ═══════════════════════════════════════════════════════════════════
-    
-    echo "Setting up audio routing..."
-    echo ""
+    local hp_count=$(echo "$headphone_sinks" | wc -w)
+    local mic_count=$(echo "$headphone_sources" | wc -l)
     
     # ───────────────────────────────────────────────────────────────────
     # 1. ROOM → LAPTOP: Mix all headphone mics, send to bridge output
     # ───────────────────────────────────────────────────────────────────
     echo "┌─ Room → Laptop (mixing headphone mics)..."
     
-    # Create null sink to mix room mics
-    pactl load-module module-null-sink \
-        sink_name="$NULL_SINK_ROOM" \
-        sink_properties='device.description="Lichen Room Mix"' > /dev/null
-    
-    # Loopback each headphone mic into the mixer
-    for SOURCE in $HEADPHONE_SOURCES; do
-        echo "│  Adding mic: $(echo $SOURCE | cut -c1-50)..."
+    if [ "$mic_count" -gt 0 ] && [ -n "$headphone_sources" ]; then
+        # Create null sink to mix room mics
+        pactl load-module module-null-sink \
+            sink_name="$NULL_SINK_ROOM" > /dev/null
+        
+        # Loopback each headphone mic into the mixer and set volume to 100%
+        for SOURCE in $headphone_sources; do
+            echo "│  Adding mic: $(echo $SOURCE | cut -c1-50)..."
+            pactl load-module module-loopback \
+                source="$SOURCE" \
+                sink="$NULL_SINK_ROOM" \
+                latency_msec=1 \
+                adjust_time=0 > /dev/null
+            # Set mic volume to 100% for clear audio
+            pactl set-source-volume "$SOURCE" 100% 2>/dev/null || true
+        done
+        
+        # Loopback the mixed room audio to the bridge output (to laptop)
         pactl load-module module-loopback \
-            source="$SOURCE" \
-            sink="$NULL_SINK_ROOM" \
-            latency_msec=1 > /dev/null
-    done
-    
-    # Loopback the mixed room audio to the bridge output (to laptop)
-    pactl load-module module-loopback \
-        source="${NULL_SINK_ROOM}.monitor" \
-        sink="$BRIDGE_SINK" \
-        latency_msec=1 > /dev/null
-    
-    echo "└─ ✓ Room mics → Bridge output → Laptop"
+            source="${NULL_SINK_ROOM}.monitor" \
+            sink="$bridge_sink" \
+            latency_msec=1 \
+            adjust_time=0 > /dev/null
+        
+        echo "└─ ✓ Room mics → Bridge output → Laptop"
+    else
+        echo "└─ ⚠ No room mics detected, skipping room → laptop routing"
+    fi
     echo ""
     
     # ───────────────────────────────────────────────────────────────────
@@ -262,24 +323,29 @@ main() {
     # ───────────────────────────────────────────────────────────────────
     echo "┌─ Laptop → Room (distributing to headphones)..."
     
-    if [ "$HP_COUNT" -gt 0 ]; then
+    if [ "$hp_count" -gt 0 ]; then
+        # Set all headphone output volumes to 100%
+        for SINK in $headphone_sinks; do
+            pactl set-sink-volume "$SINK" 100% 2>/dev/null || true
+        done
+        
         # Combine all headphone outputs into one sink
-        SLAVES=$(echo "$HEADPHONE_SINKS" | tr ' ' ',' | sed 's/,$//')
+        local slaves=$(echo "$headphone_sinks" | tr ' ' ',' | sed 's/,$//')
         
         pactl load-module module-combine-sink \
             sink_name="$COMBINED_SINK" \
-            slaves="$SLAVES" \
-            sink_properties='device.description="Lichen All Headphones"' > /dev/null
+            slaves="$slaves" > /dev/null
         
         # Loopback bridge input (laptop audio) to all headphones
         pactl load-module module-loopback \
-            source="$BRIDGE_SOURCE" \
+            source="$bridge_source" \
             sink="$COMBINED_SINK" \
-            latency_msec=1 > /dev/null
+            latency_msec=1 \
+            adjust_time=0 > /dev/null
         
-        echo "└─ ✓ Laptop → Bridge input → All headphones"
+        echo "└─ ✓ Laptop → Bridge input → All headphones ($hp_count devices)"
     else
-        echo "└─ ⚠ Skipped (no headphones connected)"
+        echo "└─ ⚠ No headphones connected yet, skipping laptop → room routing"
     fi
     
     echo ""
@@ -287,17 +353,22 @@ main() {
     # ───────────────────────────────────────────────────────────────────
     # 3. HEARBACK: Let room participants hear themselves (optional)
     # ───────────────────────────────────────────────────────────────────
-    if [ "$HP_COUNT" -gt 0 ] && [ "$HEARBACK_PERCENT" -gt 0 ]; then
+    if [ "$hp_count" -gt 0 ] && [ "$HEARBACK_PERCENT" -gt 0 ]; then
         setup_hearback "$HEARBACK_PERCENT"
         echo ""
     fi
+}
+
+print_status() {
+    local hp_count="$1"
+    local mic_count="$2"
     
     echo "═══════════════════════════════════════════════════════════════════"
     echo ""
     echo "  ✅ LICHEN ACTIVE"
     echo ""
-    echo "  🎧 Headphones connected: $HP_COUNT"
-    echo "  🎤 Mics active: $MIC_COUNT"
+    echo "  🎧 Headphones connected: $hp_count"
+    echo "  🎤 Mics active: $mic_count"
     if [ "$HEARBACK_PERCENT" -gt 0 ]; then
         echo "  🔊 Hearback: ${HEARBACK_PERCENT}%"
     else
@@ -310,14 +381,105 @@ main() {
         echo "  Hearback: Room participants hear themselves at ${HEARBACK_PERCENT}%"
     fi
     echo ""
+    echo "  🔌 HOT-PLUG: Monitoring for device changes..."
+    echo "     Plug/unplug USB headsets anytime - auto-detected!"
+    echo ""
     echo "  Press Ctrl+C to stop"
     echo ""
     echo "═══════════════════════════════════════════════════════════════════"
+}
+
+main() {
+    echo "╔════════════════════════════════════════════════════════════════╗"
+    echo "║                    LICHEN HEADLESS                             ║"
+    echo "║         Multi-headphone audio merger (HOT-PLUG)                ║"
+    echo "╚════════════════════════════════════════════════════════════════╝"
+    echo ""
     
-    # Keep running
+    # Check for --setup flag or missing config
+    if [ "$1" = "--setup" ] || [ "$1" = "-s" ]; then
+        setup_bridge
+        echo "Setup complete. Run without --setup to start."
+        exit 0
+    elif ! load_bridge_config; then
+        echo "No bridge configuration found."
+        setup_bridge
+    fi
+    
+    # Config is already loaded by load_bridge_config
+    echo "Bridge sink: $BRIDGE_SINK"
+    echo "Bridge source: $BRIDGE_SOURCE"
+    echo ""
+    
+    # Wait for bridge device to be present in PulseAudio
+    echo "Waiting for bridge adapter..."
+    while ! pactl list sinks short | grep -q "^[0-9]*[[:space:]]*${BRIDGE_SINK}[[:space:]]"; do
+        sleep 1
+    done
+    
+    local bridge_sink=$(get_bridge_sink)
+    local bridge_source=$(get_bridge_source)
+    
+    echo "✓ Bridge adapter connected:"
+    echo "  Output (to laptop): $bridge_sink"
+    echo "  Input (from laptop): $bridge_source"
+    echo ""
+    echo "🔌 Starting hot-plug monitoring..."
+    echo "   Plug in USB headsets anytime - they'll be auto-detected!"
+    echo ""
+    
+    # Set up trap for cleanup
     trap cleanup EXIT
+    
+    # Main monitoring loop
     while true; do
-        sleep 3600
+        # Get current device state
+        local new_state=$(get_device_state)
+        
+        # Check if devices changed
+        if [ "$new_state" != "$CURRENT_DEVICE_STATE" ]; then
+            # Devices changed! Reconfigure
+            echo ""
+            echo "🔄 Device change detected! Reconfiguring..."
+            
+            # Clean up old configuration
+            cleanup
+            
+            # Ensure all USB cards are in duplex mode (needed for newly plugged devices)
+            enable_usb_duplex_profiles
+            
+            # Check if bridge is still connected
+            if ! pactl list sinks short | grep -q "^[0-9]*[[:space:]]*${BRIDGE_SINK}[[:space:]]"; then
+                echo "⚠ Bridge adapter disconnected! Waiting for reconnection..."
+                CURRENT_DEVICE_STATE=""
+                sleep 2
+                continue
+            fi
+            
+            # Use the saved bridge sink/source names
+            bridge_sink="$BRIDGE_SINK"
+            bridge_source="$BRIDGE_SOURCE"
+            
+            local headphone_sinks=$(get_headphone_sinks | tr '\n' ' ')
+            local headphone_sources=$(get_headphone_sources)
+            
+            local hp_count=$(echo "$headphone_sinks" | wc -w)
+            local mic_count=$(echo "$headphone_sources" | wc -l)
+            
+            echo "  Found: $hp_count headphones, $mic_count mics"
+            
+            # Set up audio routing with current devices
+            setup_audio_routing "$bridge_sink" "$bridge_source" "$headphone_sinks" "$headphone_sources"
+            
+            # Update state
+            CURRENT_DEVICE_STATE="$new_state"
+            
+            # Print status
+            print_status "$hp_count" "$mic_count"
+        fi
+        
+        # Sleep before next check
+        sleep "$POLL_INTERVAL"
     done
 }
 
@@ -352,24 +514,37 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             ;;
+        --poll-interval=*)
+            POLL_INTERVAL="${1#*=}"
+            if ! [[ "$POLL_INTERVAL" =~ ^[0-9]+$ ]]; then
+                echo "Error: poll-interval must be a number (seconds)"
+                exit 1
+            fi
+            shift
+            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --setup, -s         Force bridge adapter setup"
-            echo "  --hearback=PERCENT  Enable hearback (hear yourself) at PERCENT volume (0-100)"
-            echo "                      Example: --hearback=30 for 30% sidetone"
-            echo "  --help, -h          Show this help"
+            echo "  --setup, -s              Force bridge adapter setup"
+            echo "  --hearback=PERCENT       Enable hearback (hear yourself) at PERCENT volume (0-100)"
+            echo "                           Example: --hearback=30 for 30% sidetone"
+            echo "  --poll-interval=SECONDS  How often to check for device changes (default: 2)"
+            echo "  --help, -h               Show this help"
             echo ""
             echo "Environment variables:"
-            echo "  HEARBACK_PERCENT    Set hearback volume (0-100), default: 0 (off)"
+            echo "  HEARBACK_PERCENT         Set hearback volume (0-100), default: 0 (off)"
             echo ""
             echo "On first run, you'll be prompted to set up the bridge adapter."
             echo ""
+            echo "HOT-PLUG SUPPORT:"
+            echo "  After setup, you can plug/unplug USB headsets anytime!"
+            echo "  The system will automatically detect changes and reconfigure."
+            echo ""
             echo "Examples:"
-            echo "  $0                      # Run with hearback off"
-            echo "  $0 --hearback=25        # Run with 25% hearback"
-            echo "  HEARBACK_PERCENT=50 $0  # Run with 50% hearback via env var"
+            echo "  $0                       # Run with hot-plug monitoring"
+            echo "  $0 --hearback=25         # Run with 25% hearback"
+            echo "  HEARBACK_PERCENT=50 $0   # Run with 50% hearback via env var"
             exit 0
             ;;
         *)

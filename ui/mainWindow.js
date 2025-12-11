@@ -210,6 +210,22 @@ class MainWindow extends Adw.ApplicationWindow {
                 box-shadow: none;
             }
             
+            .action-button.warning {
+                background: linear-gradient(135deg, #9e6a03 0%, #d29922 100%);
+                box-shadow: 0 4px 12px rgba(210, 153, 34, 0.3);
+            }
+            
+            .action-button.warning:hover {
+                background: linear-gradient(135deg, #d29922 0%, #e3b341 100%);
+            }
+            
+            .missing-audio-info {
+                font-family: 'Inter', sans-serif;
+                font-size: 11px;
+                color: #d29922;
+                margin-top: 4px;
+            }
+            
             .status-badge {
                 font-family: 'JetBrains Mono', monospace;
                 font-size: 9px;
@@ -572,6 +588,31 @@ class MainWindow extends Adw.ApplicationWindow {
         });
         this._resetBtn.connect('clicked', () => this._resetToDefaults());
         panel.append(this._resetBtn);
+
+        // Recover missing audio sources button (shown when needed)
+        this._recoverBox = new Gtk.Box({
+            orientation: Gtk.Orientation.VERTICAL,
+            margin_top: 12,
+            visible: false,
+        });
+        
+        this._recoverBtn = new Gtk.Button({
+            label: '⚡ Recover Audio Inputs',
+            css_classes: ['action-button', 'warning'],
+        });
+        this._recoverBtn.connect('clicked', () => this._recoverMissingSources());
+        this._recoverBox.append(this._recoverBtn);
+        
+        this._recoverInfoLabel = new Gtk.Label({
+            label: '',
+            css_classes: ['missing-audio-info'],
+            halign: Gtk.Align.START,
+            wrap: true,
+            max_width_chars: 25,
+        });
+        this._recoverBox.append(this._recoverInfoLabel);
+        
+        panel.append(this._recoverBox);
 
         // Hearback option
         this._hearbackRow = new Gtk.Box({
@@ -989,6 +1030,9 @@ class MainWindow extends Adw.ApplicationWindow {
         const hasRoutes = this._audioManager.hasActiveRoutes;
         this._resetBtn.sensitive = hasRoutes;
 
+        // Check for missing audio sources and show recovery option
+        this._updateRecoveryStatus();
+
         // Show/hide hearback option based on whether we have both input and output routes
         const canHearback = this._audioManager.canEnableHearback;
         const wasVisible = this._hearbackRow.get_visible();
@@ -1189,6 +1233,30 @@ class MainWindow extends Adw.ApplicationWindow {
         this._updateStatus();
         this._updateRoutesList();
         this._clearSelection();
+    }
+
+    _updateRecoveryStatus() {
+        const missingInfo = this._audioManager.getMissingSourcesInfo();
+        const hasMissing = missingInfo.length > 0;
+        
+        this._recoverBox.set_visible(hasMissing);
+        
+        if (hasMissing) {
+            const devices = missingInfo.map(d => d.description).join(', ');
+            this._recoverInfoLabel.set_label(
+                `${missingInfo.length} input(s) detected at ALSA level but not in PulseAudio: ${devices}`
+            );
+        }
+    }
+
+    _recoverMissingSources() {
+        const recovered = this._audioManager.recoverMissingSources();
+        
+        if (recovered > 0) {
+            // Refresh the device list to show newly recovered sources
+            this._refreshDevices();
+            this._updateStatus();
+        }
     }
 });
 

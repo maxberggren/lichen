@@ -14,10 +14,12 @@ var AudioManager = class AudioManager {
         this._hearbackVolume = 70;  // 0-100 percent, default to 70%
         this._hearbackSinkInputIndex = null;  // Track the sink-input index for volume control
         this._deviceVolumes = {};  // Track per-device volume levels { sinkName: volumePercent }
+        this._forcedSourceModules = [];  // Track modules we force-loaded for missing sources
         this._configPath = GLib.build_filenamev([GLib.get_user_config_dir(), 'lichen', 'settings.json']);
         
         this._loadSettings();
         this.refresh();
+        this._recoverMissingSources();  // Auto-recover sources that ALSA has but PulseAudio missed
         this._detectExistingRoutes();
         this._cleanupOrphanedHearbackModules();
         this._restoreSettings();
@@ -103,11 +105,34 @@ var AudioManager = class AudioManager {
         this._listeners.forEach(cb => cb());
     }
 
-    refresh() {
+    refresh(tryRecovery = false) {
         this._fetchSinks();
         this._fetchSources();
         this._cleanupOrphanedHearbackModules();
+        
+        // Optionally try to recover missing sources
+        if (tryRecovery) {
+            this._recoverMissingSources();
+        }
+        
         this._notifyListeners();
+    }
+
+    // Check if there are ALSA capture devices that PulseAudio is missing
+    hasMissingAudioSources() {
+        const missing = this._findMissingAlsaSources();
+        return missing.length > 0;
+    }
+
+    // Get info about what's missing for UI display
+    getMissingSourcesInfo() {
+        return this._findMissingAlsaSources().map(d => ({
+            card: d.card,
+            device: d.device,
+            name: d.cardName,
+            description: d.description,
+            alsaDevice: `hw:${d.card},${d.device}`,
+        }));
     }
 
     _runPactl(args) {
@@ -255,6 +280,160 @@ var AudioManager = class AudioManager {
         }
 
         this._notifyListeners();
+    }
+
+    // =========================================================================
+    // Source Recovery - Force-load ALSA sources that PulseAudio missed
+    // =========================================================================
+    // Some USB audio adapters use jack detection and don't expose capture to
+    // PulseAudio when connected to another audio output (not a headset).
+    // This method finds ALSA capture devices missing from PulseAudio and
+    // force-loads them using module-alsa-source.
+
+    _recoverMissingSources() {
+        const missing = this._findMissingAlsaSources();
+        if (missing.length === 0) {
+            return;
+        }
+
+        log(`Lichen: Found ${missing.length} ALSA capture device(s) missing from PulseAudio`);
+        
+        for (const device of missing) {
+            this._forceLoadAlsaSource(device);
+        }
+        
+        // Refresh to pick up newly loaded sources
+        if (missing.length > 0) {
+            this._fetchSources();
+        }
+    }
+
+    // Find ALSA capture devices that aren't available in PulseAudio
+    _findMissingAlsaSources() {
+        const alsaCaptures = this._getAlsaCaptureDevices();
+        const paSourceCards = this._getPulseAudioSourceCards();
+        
+        const missing = [];
+        
+        for (const alsa of alsaCaptures) {
+            // Check if PulseAudio has a source for this card
+            const hasSource = paSourceCards.some(card => card === alsa.card);
+            
+            if (!hasSource) {
+                log(`Lichen: ALSA capture hw:${alsa.card},${alsa.device} (${alsa.name}) not in PulseAudio`);
+                missing.push(alsa);
+            }
+        }
+        
+        return missing;
+    }
+
+    // Parse ALSA capture devices from arecord -l
+    _getAlsaCaptureDevices() {
+        const devices = [];
+        
+        try {
+            const [ok, stdout, stderr, exitStatus] = GLib.spawn_command_line_sync('arecord -l');
+            if (!ok || exitStatus !== 0) {
+                return devices;
+            }
+            
+            const output = new TextDecoder().decode(stdout);
+            // Parse lines like: "card 2: Headset [USB Audio Device], device 0: USB Audio [USB Audio]"
+            const regex = /card (\d+):\s*(\S+)\s*\[([^\]]+)\],\s*device (\d+):/g;
+            let match;
+            
+            while ((match = regex.exec(output)) !== null) {
+                devices.push({
+                    card: parseInt(match[1]),
+                    cardName: match[2],
+                    description: match[3],
+                    device: parseInt(match[4]),
+                });
+            }
+        } catch (e) {
+            logError(e, 'Failed to get ALSA capture devices');
+        }
+        
+        return devices;
+    }
+
+    // Get card numbers that PulseAudio already has sources for
+    _getPulseAudioSourceCards() {
+        const cards = [];
+        
+        try {
+            // Get source info including alsa.card property
+            const output = this._runPactl('list sources');
+            const blocks = output.split(/\n(?=Source #\d+)/);
+            
+            for (const block of blocks) {
+                if (!block.trim()) continue;
+                
+                // Look for alsa.card property
+                const cardMatch = block.match(/alsa\.card = "(\d+)"/);
+                if (cardMatch) {
+                    cards.push(parseInt(cardMatch[1]));
+                }
+            }
+        } catch (e) {
+            logError(e, 'Failed to get PulseAudio source cards');
+        }
+        
+        return cards;
+    }
+
+    // Force-load an ALSA source that PulseAudio missed
+    _forceLoadAlsaSource(alsaDevice) {
+        const deviceSpec = `hw:${alsaDevice.card},${alsaDevice.device}`;
+        const sourceName = `lichen_recovered_${alsaDevice.cardName}_${alsaDevice.card}`;
+        const description = `${alsaDevice.description} (Recovered)`;
+        
+        // Try to load with module-alsa-source
+        // Use tsched=0 for USB devices to reduce latency issues
+        const cmd = `pactl load-module module-alsa-source device=${deviceSpec} source_name=${sourceName} source_properties=device.description="${description}" tsched=0`;
+        
+        try {
+            log(`Lichen: Force-loading ALSA source: ${deviceSpec}`);
+            const [ok, stdout, stderr, exitStatus] = GLib.spawn_command_line_sync(cmd);
+            
+            if (ok && exitStatus === 0) {
+                const moduleId = new TextDecoder().decode(stdout).trim();
+                if (moduleId) {
+                    this._forcedSourceModules.push({
+                        moduleId: parseInt(moduleId),
+                        card: alsaDevice.card,
+                        device: alsaDevice.device,
+                        sourceName: sourceName,
+                    });
+                    log(`Lichen: Successfully recovered source ${sourceName} (module ${moduleId})`);
+                    return true;
+                }
+            } else {
+                const stderrText = new TextDecoder().decode(stderr);
+                log(`Lichen: Failed to load ALSA source ${deviceSpec}: ${stderrText}`);
+            }
+        } catch (e) {
+            logError(e, `Failed to force-load ALSA source ${deviceSpec}`);
+        }
+        
+        return false;
+    }
+
+    // Manually trigger source recovery (can be called from UI)
+    recoverMissingSources() {
+        this._recoverMissingSources();
+        this._notifyListeners();
+        return this._forcedSourceModules.length;
+    }
+
+    // Get list of recovered sources
+    get recoveredSources() {
+        return this._forcedSourceModules.map(m => ({
+            sourceName: m.sourceName,
+            card: m.card,
+            device: m.device,
+        }));
     }
 
     // Clean up orphaned hearback loopback modules (from previous sessions)

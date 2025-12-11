@@ -38,7 +38,8 @@ class LichenApplication extends Adw.Application {
         const refreshAction = new Gio.SimpleAction({ name: 'refresh' });
         refreshAction.connect('activate', () => {
             if (this._audioManager) {
-                this._audioManager.refresh();
+                // Try to recover missing sources on manual refresh
+                this._audioManager.refresh(true);
             }
         });
         this.add_action(refreshAction);
