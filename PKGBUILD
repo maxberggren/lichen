@@ -12,7 +12,7 @@ optdepends=(
     'pulseaudio: Traditional PulseAudio audio server'
 )
 source=("$pkgname-$pkgver.tar.gz::https://github.com/maxberggren/$pkgname/archive/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('b4b95b348c1ae2443972f04466a4a4a762b64ea040e7ec86e7903389b2515d3f')
 
 package() {
     cd "$srcdir/$pkgname-$pkgver"
