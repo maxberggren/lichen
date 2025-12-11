@@ -1,0 +1,17 @@
+pkgbase = lichen
+	pkgdesc = Multi-headphone audio router for Linux - route audio to multiple headphones and mix microphones
+	pkgver = 1.0.0
+	pkgrel = 1
+	url = https://github.com/maxberggren/lichen
+	arch = any
+	license = MIT
+	depends = gtk4
+	depends = libadwaita
+	depends = gjs
+	depends = pulseaudio
+	depends = alsa-utils
+	optdepends = pipewire-pulse: PipeWire PulseAudio compatibility
+	source = lichen-1.0.0.tar.gz::https://github.com/maxberggren/lichen/archive/v1.0.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = lichen
